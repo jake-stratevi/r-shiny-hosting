@@ -27,6 +27,13 @@ resource "aws_lambda_function" "waker" {
   timeout          = 15
   memory_size      = 256
 
+  # The app's cost kill-switch. waker_enabled = false sets reserved
+  # concurrency to 0, so the ALB can never invoke this function and nothing
+  # can scale the service up -- visitors get an ALB error page instead of a
+  # cold start. Flip the tfvar back to true and re-apply to re-enable.
+  # -1 is the provider's "unreserved" default.
+  reserved_concurrent_executions = var.waker_enabled ? -1 : 0
+
   environment {
     variables = {
       CLUSTER        = data.aws_ssm_parameter.ecs_cluster_name.value

@@ -24,10 +24,12 @@ COPY seed.py ./
 
 # Non-root. The proxy is in the request path for every app on the platform;
 # it needs no privileged port (the ALB target group points at 8080) and no
-# write access to anything.
-RUN useradd --system --create-home --uid 10001 proxy \
-    && chown -R proxy:proxy /app
-USER proxy
+# write access to anything. Named "shinyproxy" because Debian's base image
+# already ships a system user literally called "proxy" (uid 13) -- useradd
+# exits 9 on the collision.
+RUN useradd --system --create-home --uid 10001 shinyproxy \
+    && chown -R shinyproxy:shinyproxy /app
+USER shinyproxy
 
 EXPOSE 8080
 

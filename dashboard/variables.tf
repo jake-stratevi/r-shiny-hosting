@@ -140,3 +140,9 @@ variable "access_contact" {
   type        = string
   default     = "your Stratevi contact"
 }
+
+variable "waker_enabled" {
+  description = "Cost kill-switch. false blocks the waker Lambda (reserved concurrency 0) so nothing can scale this app up. See lambda.tf."
+  type        = bool
+  default     = true
+}
