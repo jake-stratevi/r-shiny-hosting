@@ -77,6 +77,25 @@ def test_idle_after_seconds():
     assert App.create(host="a.b", idle_minutes=45).idle_after_seconds() == 45 * 60
 
 
+# --- the C1 session cap ------------------------------------------------
+
+
+def test_max_session_hours_absent_or_zero_means_uncapped():
+    assert App.create(host="a.b").max_session_hours == registry.DEFAULT_MAX_SESSION_HOURS
+    assert App.create(host="a.b").has_session_cap() is False
+    assert App.create(host="a.b", max_session_hours=0).has_session_cap() is False
+
+
+def test_max_session_hours_set_gives_a_cap_in_seconds():
+    row = App.create(host="a.b", max_session_hours=4)
+    assert row.has_session_cap() is True
+    assert row.max_session_seconds() == 4 * 3600
+
+
+def test_awake_since_defaults_to_absent():
+    assert App.create(host="a.b").awake_since == 0
+
+
 # --- item encoding ---------------------------------------------------------
 
 
@@ -92,6 +111,8 @@ def test_item_round_trip():
         idle_minutes=15,
         expires_at=1_800_000_000,
         last_active=1_700_000_000,
+        max_session_hours=4,
+        awake_since=1_700_000_500,
     )
     assert registry.app_from_item(registry.app_item(row)) == row
 
@@ -101,6 +122,8 @@ def test_an_empty_string_set_is_omitted_rather_than_written_empty():
     assert "allowed_emails" not in item
     assert "expires_at" not in item
     assert "last_active" not in item
+    assert "max_session_hours" not in item
+    assert "awake_since" not in item
 
 
 def test_allowed_emails_written_by_hand_as_a_list_are_read():
@@ -119,6 +142,8 @@ def test_a_sparse_item_decodes_to_the_defaults():
     assert row.idle_minutes == registry.DEFAULT_IDLE_MINUTES
     assert row.status == registry.STATUS_ACTIVE
     assert row.access_mode == registry.MODE_USERS
+    assert row.max_session_hours == registry.DEFAULT_MAX_SESSION_HOURS
+    assert row.awake_since == 0
 
 
 # --- the read-through cache ------------------------------------------------
@@ -132,6 +157,7 @@ class FakeStore:
         self.reads = 0
         self.fail = False
         self.statuses: list[tuple[str, str]] = []
+        self.awake_since_writes: list[tuple[str, int]] = []
 
     async def app(self, host: str) -> App | None:
         self.reads += 1
@@ -144,6 +170,9 @@ class FakeStore:
 
     async def set_last_active(self, host: str, ts: int) -> None:
         pass
+
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        self.awake_since_writes.append((host, ts))
 
     async def set_status(self, host: str, status: str) -> None:
         self.statuses.append((host, status))
@@ -229,3 +258,18 @@ async def test_invalidate_and_set_status_force_a_fresh_read(cached):
     assert store.statuses == [("a.b", registry.STATUS_EXPIRED)]
     await cache.app("a.b")
     assert store.reads == 3
+
+
+@pytest.mark.asyncio
+async def test_set_awake_since_passes_through_without_invalidating_the_cache(cached):
+    """Unlike set_status: awake_since does not affect the access decision, so
+    a cached row need not be dropped for it to take effect."""
+    store, clock, cache = cached
+    await cache.app("a.b")
+    assert store.reads == 1
+
+    await cache.set_awake_since("A.B:443", 1234)
+    assert store.awake_since_writes == [("A.B:443", 1234)]
+
+    await cache.app("a.b")
+    assert store.reads == 1

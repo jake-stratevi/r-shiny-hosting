@@ -85,6 +85,8 @@ WAKE_TIMEOUT = 10.0
 class RegistryLike(Protocol):
     async def app(self, host: str) -> App | None: ...
 
+    async def set_awake_since(self, host: str, ts: int) -> None: ...
+
 
 class TasksLike(Protocol):
     async def task_ip(self, service: str) -> str: ...
@@ -191,6 +193,10 @@ class Proxy:
         self._log = log or logging.getLogger("proxy.server")
         self._clock = clock
         self._prober = prober or Prober()
+        # Strong refs to in-flight awake_since persists, same reason as
+        # activity.Tracker's _pending: asyncio only holds weak refs to tasks,
+        # and a garbage-collected one is a silently dropped write.
+        self._pending: set[asyncio.Task[None]] = set()
 
     # --- entry point -------------------------------------------------------
 
@@ -318,7 +324,30 @@ class Proxy:
                 "waking app",
                 extra={"host": host, "app_key": app.app_key, "service": app.ecs_service},
             )
+            # C1's session cap is measured from here. Off the request path,
+            # same best-effort pattern as activity.Tracker's last_active
+            # writes: a failure here must not cost the user their page load.
+            self._persist_awake_since(host)
         return pages.starting(app.app_key)
+
+    def _persist_awake_since(self, host: str) -> None:
+        now = self._clock()
+        try:
+            task = asyncio.get_running_loop().create_task(
+                self._write_awake_since(host, now)
+            )
+        except RuntimeError:
+            return  # no loop (a unit test calling _wake synchronously)
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def _write_awake_since(self, host: str, at: float) -> None:
+        try:
+            await self._apps.set_awake_since(host, int(at))
+        except Exception as exc:  # never allowed to escape into the loop
+            self._log.warning(
+                "awake_since write failed", extra={"host": host, "reason": str(exc)}
+            )
 
     # --- reserved endpoints ------------------------------------------------
 

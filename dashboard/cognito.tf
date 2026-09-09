@@ -1,6 +1,19 @@
 # This app's own client on the shared user pool. Separate per app because the
 # callback URL is per-hostname.
+#
+# Only the legacy request path needs it: it exists solely to feed the
+# authenticate-cognito action on this app's own listener rule (alb.tf) and the
+# COGNITO_CONFIG the waker/sleeper hand to their holding page. When proxied, the
+# proxy authenticates on the shared catch-all rule with ONE shared client whose
+# callback list gains this host at migration time -- docs/design/proxy.md,
+# "Auth stays on the ALB".
+#
+# Rollback (proxied = false) recreates the client with a NEW id and secret; the
+# listener rule is recreated in the same apply and points at it, so nothing else
+# needs touching. Users are asked to sign in again.
 resource "aws_cognito_user_pool_client" "this" {
+  count = var.proxied ? 0 : 1
+
   name         = local.name
   user_pool_id = data.aws_ssm_parameter.cognito_user_pool_id.value
 

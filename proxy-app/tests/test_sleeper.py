@@ -15,7 +15,9 @@ class FakeStore:
     def __init__(self, rows: list[App]) -> None:
         self.rows = rows
         self.statuses: list[tuple[str, str]] = []
+        self.awake_since_writes: list[tuple[str, int]] = []
         self.fail_status = False
+        self.fail_awake_since = False
 
     async def app(self, host: str) -> App | None:
         return next((r for r in self.rows if r.host == host), None)
@@ -25,6 +27,16 @@ class FakeStore:
 
     async def set_last_active(self, host: str, ts: int) -> None:
         pass
+
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        if self.fail_awake_since:
+            raise RuntimeError("dynamodb is unhappy")
+        self.awake_since_writes.append((host, ts))
+        # Mirror the write into the row, the way a real table would answer the
+        # next Scan -- several tests below tick() more than once.
+        for i, r in enumerate(self.rows):
+            if r.host == host:
+                self.rows[i] = App.create(**{**r.__dict__, "awake_since": ts})
 
     async def set_status(self, host: str, status: str) -> None:
         if self.fail_status:
@@ -175,6 +187,130 @@ async def test_a_missing_service_is_not_scaled():
     await loop.tick()
 
     assert scaler.slept == []
+
+
+# --- force-sleep cap (C1) ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_running_app_past_its_session_cap_is_force_slept_even_with_open_sockets():
+    """The whole point of C1: the cap ignores activity and open sockets."""
+    store = FakeStore([row(max_session_hours=1, awake_since=int(NOW - 3700))])
+    scaler = FakeScaler()
+    activity = FakeActivity(
+        last={"model.tools.stratevi.com": NOW - 5},  # just used
+        sockets={"model.tools.stratevi.com": 1},  # and a socket is open
+    )
+    loop, recorder = loop_for(store, scaler, activity)
+
+    await loop.tick()
+
+    assert scaler.slept == ["shiny-model"]
+    assert [e.event for e in recorder.events] == [audit.EVENT_FORCE_SLEEP]
+    assert store.awake_since_writes[-1] == ("model.tools.stratevi.com", 0)
+
+
+@pytest.mark.asyncio
+async def test_an_app_within_its_session_cap_is_left_alone():
+    store = FakeStore([row(max_session_hours=2, awake_since=int(NOW - 3600))])
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 5})
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == []
+    assert recorder.events == []
+
+
+@pytest.mark.asyncio
+async def test_an_app_with_no_cap_is_never_force_slept_however_long_it_has_been_awake():
+    store = FakeStore([row(max_session_hours=0, awake_since=int(NOW - 10 * 86400))])
+    scaler = FakeScaler()
+    activity = FakeActivity(
+        last={"model.tools.stratevi.com": NOW - 5},
+        sockets={"model.tools.stratevi.com": 1},
+    )
+    loop, recorder = loop_for(store, scaler, activity)
+
+    await loop.tick()
+
+    assert scaler.slept == []
+    assert recorder.events == []
+
+
+@pytest.mark.asyncio
+async def test_a_restarted_or_externally_woken_service_gets_awake_since_set_not_slept():
+    """No awake_since on the row, but the service is running: conservative --
+    start counting from now instead of guessing at unknown history, and do
+    not force-sleep on the very tick that starts tracking."""
+    store = FakeStore([row(max_session_hours=1)])  # awake_since defaults to 0
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 5})
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == []
+    assert recorder.events == []
+    assert store.awake_since_writes == [("model.tools.stratevi.com", int(NOW))]
+
+
+@pytest.mark.asyncio
+async def test_awake_since_is_cleared_once_the_service_is_observed_asleep():
+    store = FakeStore([row(awake_since=int(NOW - 100))])
+    scaler = FakeScaler({"shiny-model": ServiceState(exists=True, desired=0)})
+    loop, _ = loop_for(store, scaler, FakeActivity())
+
+    await loop.tick()
+
+    assert store.awake_since_writes == [("model.tools.stratevi.com", 0)]
+    assert scaler.slept == []
+
+
+@pytest.mark.asyncio
+async def test_awake_since_is_also_cleared_for_a_service_that_no_longer_exists():
+    """A deleted service is "observed at 0" too -- nothing running means
+    nothing to force-sleep or idle-sleep, and a stale awake_since is cleared."""
+    store = FakeStore([row(awake_since=int(NOW - 100))])
+    scaler = FakeScaler({"shiny-model": ServiceState(exists=False)})
+    loop, _ = loop_for(store, scaler, FakeActivity())
+
+    await loop.tick()
+
+    assert store.awake_since_writes == [("model.tools.stratevi.com", 0)]
+
+
+@pytest.mark.asyncio
+async def test_awake_since_is_cleared_when_the_idle_sleeper_scales_a_service_to_zero():
+    store = FakeStore([row(idle_minutes=15, awake_since=int(NOW - 3600))])
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 3600})
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == ["shiny-model"]
+    assert [e.event for e in recorder.events] == [audit.EVENT_SLEEP]
+    assert store.awake_since_writes == [("model.tools.stratevi.com", 0)]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_awake_since_write_does_not_stop_the_pass():
+    store = FakeStore([row(idle_minutes=15)])
+    store.fail_awake_since = True
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 3600})
+    )
+
+    await loop.tick()  # must not raise
+
+    assert scaler.slept == ["shiny-model"]
+    assert [e.event for e in recorder.events] == [audit.EVENT_SLEEP]
 
 
 # --- expiry ----------------------------------------------------------------

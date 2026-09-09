@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: 9 September 2026 (evening — Step 2 foundations deployed).
+Last updated: 9 September 2026 (evening — proxy stack live, model hard off).
 
 Read this before touching anything. It records what is actually deployed, what
 is half-done, and what has never been tested.
@@ -51,18 +51,30 @@ Live at https://dashboards.tools.stratevi.com (verified 2026-09-09: 302 to the
 Hub pool's hosted UI). Serves the per-user app menu from `catalog.yaml` per
 ADR-0013.
 
-**Model stack. Applied — but see "Broken right now".**
-`shiny-model` service exists and is ACTIVE.
+**Model stack. Applied — hard off. See "Broken right now".**
+`shiny-model` service exists but is deliberately held at 0/0.
+
+**Proxy stack. Deployed and live (evening of 2026-09-09).**
+`shiny-proxy` service ACTIVE, 1/1, healthy behind the ALB on the catch-all
+listener rule at priority 5000. Wildcard DNS for app hostnames is live, the
+image is pushed, and both DynamoDB tables it depends on exist:
+`shiny-proxy-apps` (routing) and `shiny-proxy-audit` (per-request log). No
+apps have been cut over to it yet — see [RUNBOOK.md](../RUNBOOK.md#proxy-operations)
+for the migration checklist and [ADR-0014](adr/0014-standalone-control-plane.md)
+for why it exists.
 
 ## Broken right now
 
-**The `shiny-model` ECR repository has no image.** Observed 2026-09-09: the
-service sat at desired 1 / running 0, retry-looping with
-`CannotPullContainerError: shiny-model:latest not found` — someone hit the
-model's URL, the waker scaled it up, and the task can never place. No compute
-bills (the task never starts) and the sleeper eventually scales it back down,
-but `model.tools.stratevi.com` is a dead link until the model image is built
-and pushed. Building it needs the full app directory (`ui.R`, `global.R`,
+**The `shiny-model` ECR repository still has no image — and the service is
+now hard off rather than retry-looping.** The previous state here was
+`CannotPullContainerError: shiny-model:latest not found`: someone hit the
+model's URL, the waker scaled it up, and the task could never place. That's
+now moved from "harmless but noisy" to "turned off on purpose" — the waker's
+`waker_enabled` tfvar is set `false` for the model, its Lambda's reserved
+concurrency is 0 (so it can't even attempt to invoke), and the service sits at
+desired 0 / running 0. `model.tools.stratevi.com` is a dead link until the
+model image is built and pushed *and* `waker_enabled` is flipped back. Building
+the image needs the full app directory (`ui.R`, `global.R`,
 `Rcode_Packages.R`, `Rcode_HelperFunctions.R`, `Images/`, `www/`) plus the R
 changes in [ADR-0006](adr/0006-heartbeat-idle-detection.md) and
 [ADR-0011](adr/0011-fargate-cpu-detection.md).
@@ -87,9 +99,20 @@ code. See [ADR-0014](adr/0014-standalone-control-plane.md) and
   `shiny-task` role is deleted; only the execution role is shared, by design.
 - **ALB access logs** to `shiny-alb-logs-652063276768`, 90-day expiry,
   verified enabled on the load balancer.
-- The deployment policy is at **v3**: S3 broadened to the state bucket +
-  `shiny-*` buckets, and `iam:ListInstanceProfilesForRole` added (the
-  provider calls it before any role delete).
+- The deployment policy is at **v4**: S3 broadened to the state bucket +
+  `shiny-*` buckets, `iam:ListInstanceProfilesForRole` added (the provider
+  calls it before any role delete), and — new for the proxy stack —
+  DynamoDB access to the `shiny-*` tables plus
+  `ec2:ModifySecurityGroupRules` (the proxy's security group needs rule
+  updates that a plain `Authorize`/`Revoke` pair doesn't cover).
+
+## Current run-rate
+
+Fixed monthly cost is now **≈ $29**: ALB ~$19.93 (unchanged, it never sleeps)
+plus the proxy task ~$9 (it's always-on by design — that's the tradeoff for
+seeing every request server-side) plus cents for DynamoDB and the hosted
+zone. The model being hard off removes its Fargate cost entirely rather than
+just capping it, since the service can no longer be woken at all.
 
 ## Known-fragile
 

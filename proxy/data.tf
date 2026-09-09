@@ -28,26 +28,11 @@ data "aws_ssm_parameter" "route53_zone_id" { name = "${local.ssm}/route53_zone_i
 data "aws_ssm_parameter" "domain_name" { name = "${local.ssm}/domain_name" }
 data "aws_ssm_parameter" "log_retention_days" { name = "${local.ssm}/log_retention_days" }
 
-# ---------------------------------------------------------------------------
-# CONTRACT GAP: platform/ssm.tf does not export the ALB's security group id
-# (only task_security_group_id, which is the wrong SG -- that one is scoped to
-# port 3838). Looked it up by name instead of by SSM/remote state so this
-# stack still needs no access to the platform stack's state. The name is
-# "${var.project}-alb" per platform/network.tf's aws_security_group.alb
-# ("${local.name}-alb" where local.name = var.project).
-#
-# This should become a proper `/shiny/platform/alb_security_group_id` SSM
-# export in platform/ssm.tf -- flagged in the build report, NOT fixed here,
-# because this task is scoped to proxy/ only.
-# ---------------------------------------------------------------------------
-data "aws_security_group" "alb" {
-  vpc_id = data.aws_ssm_parameter.vpc_id.value
-
-  filter {
-    name   = "tag:Name"
-    values = ["${var.project}-alb"]
-  }
-}
+# The ALB SG (for our own ingress rule) and the shared tasks SG (so we can
+# open the app port FROM the proxy -- see apps_from_proxy in ecs.tf). Both
+# proper SSM exports as of the same change that added this stack.
+data "aws_ssm_parameter" "alb_security_group_id" { name = "${local.ssm}/alb_security_group_id" }
+data "aws_ssm_parameter" "task_security_group_id" { name = "${local.ssm}/task_security_group_id" }
 
 locals {
   name          = "${var.project}-proxy"

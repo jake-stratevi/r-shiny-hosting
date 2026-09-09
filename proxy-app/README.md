@@ -166,13 +166,15 @@ credentials, not the task role.
 | `idle_minutes` | N | default 15 |
 | `expires_at` | N | epoch seconds, optional; 0/absent means never |
 | `last_active` | N | epoch seconds, written at most once a minute |
+| `max_session_hours` | N | optional; 0/absent means uncapped. Hard ceiling on continuous awake time — see "The force-sleep cap" below |
+| `awake_since` | N | epoch seconds, optional; 0/absent means not currently tracked awake. Set when the proxy wakes the app or when the sleeper first observes it running; cleared once the service is observed at 0 |
 
 `shiny-proxy-audit` — PK `host` (S), SK `ts` (S), TTL attribute `ttl`:
 
 | Attribute | Type | Notes |
 |---|---|---|
 | `ts` | S | `<13-digit epoch ms>#<8 hex>` — sortable, collision-proof across tasks |
-| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` |
+| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` / `force_sleep` |
 | `email`, `path`, `outcome` | S | present when known |
 | `ts_epoch` | N | seconds, for humans reading the console |
 | `ttl` | N | 90 days after the event |
@@ -227,10 +229,37 @@ and they share `last_active` through the table; on restart, boot time counts as
 activity so a deploy does not sleep a busy app.
 
 **Allow events are deduplicated for 10 minutes** per host+email. One Shiny page
-load is dozens of asset requests. Denials, wakes, sleeps and expiries are never
-collapsed, and audit writes never block or fail a request.
+load is dozens of asset requests. Denials, wakes, sleeps, expiries and
+force-sleeps are never collapsed, and audit writes never block or fail a
+request.
 
 **The sleeper/reaper interval is a 60s code constant**, not config.
+
+**The force-sleep cap (`max_session_hours`, C1).** The sleeper treats an open
+websocket as activity, so a browser tab left open keeps an expensive app — the
+model at $0.233/hr — awake indefinitely. `max_session_hours` is a hard
+ceiling, set per app (absent/0 = uncapped): once a service has been
+continuously awake longer than the cap, the sleeper scales it to zero even
+with open sockets or recent requests, and audits `force_sleep` (never
+deduplicated, distinct from `sleep`). This check runs *before* the idle check
+and ignores activity entirely — it is not a longer idle timeout, it is a
+ceiling. Users lose their session; that is the intended trade, and the
+starting page is one refresh away.
+
+Enforcement is measured from `awake_since`, not from `last_active`. The proxy
+sets it (best-effort, off the request path, same pattern as `last_active`)
+the moment it actually wakes an app — not on every request during the cold
+start, only the one that flips `desiredCount` 0→1. The sleeper loop fills in
+the two cases the wake path cannot see by itself:
+
+- a service it observes running with no `awake_since` on the row (woken by
+  something other than this proxy, or a proxy that restarted mid-session) —
+  it sets `awake_since` to *now* rather than guessing at history it never saw;
+- a service observed with `desiredCount` at 0 — it clears `awake_since`.
+
+Both directions are deliberately conservative: a freshly-set `awake_since`
+can never make the cap trip early on unknown history, and a stale one is
+never left around once the service is actually asleep.
 
 ## Seeding
 
@@ -246,6 +275,10 @@ links to, defaults `ecs_service` to `<prefix>-<key>` (prefix `shiny`), and
 **refuses** an entry whose `access_mode` is reserved or unknown, or one in
 `users` mode with an empty `allowed_emails` — both would produce a row the
 proxy refuses every request to.
+
+`max_session_hours` is an optional per-app `catalog.yaml` key (the force-sleep
+cap, see above); omitted entries seed as uncapped, and `--dry-run` prints the
+attribute only for an entry that sets it.
 
 Keep `catalog.yaml` in sync with each app's `terraform.tfvars` `allowed_emails`
 until the portal phase collapses the two (ADR-0013).

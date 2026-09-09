@@ -26,6 +26,18 @@ ErrorRecord objects, not strings, so text matching against error output silently
 never matches. Shell the redirect out to `cmd /c "… 2>&1"` instead. This is what
 made the first preflight script report 17 passes on 17 failures.
 
+**`docker login --password-stdin` still 400s, even with the password assigned
+to a variable first.** The usual workaround for PowerShell mangling piped text —
+`$pw = aws ecr get-login-password; $pw | docker login --password-stdin ...` —
+doesn't hold up here; PowerShell's pipeline still re-encodes the password on
+its way to `docker login`, and ECR rejects it with a 400. The only form that
+survives is keeping the *entire* pipe inside `cmd`, so PowerShell's pipeline
+never touches the bytes:
+
+```powershell
+cmd /c "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 652063276768.dkr.ecr.us-east-1.amazonaws.com"
+```
+
 ## Terraform
 
 **`$${` is the escape for a literal `${`, not for a literal `$`.** Two separate
@@ -57,6 +69,16 @@ created either — because they all reference the service name. The retry plan w
 **The ECS service takes 3–4 minutes to create even at zero desired count.**
 That's the ELB attachment handshake, not something hanging.
 
+**Once a stack's `versions.tf` has an S3 backend block, every terraform
+command demands init first — including `terraform state list`.** There's no
+"just read the local state" mode once the block is uncommented; the CLI
+insists on `terraform init -migrate-state` before it'll answer even a
+read-only query. That means a "before" state inventory has to be captured
+*before* uncommenting the backend block, not after. If you forget, the only
+way to see what the old local state held is to open `terraform.tfstate.bak`
+directly — it's plain JSON, and `resources[].instances[].attributes` has what
+you need — rather than asking Terraform for it.
+
 ## Docker and R
 
 **`--platform linux/amd64` is mandatory on Apple Silicon.** The task definition
@@ -71,6 +93,14 @@ specifies X86_64. An arm64 image pushes fine and then fails at runtime with
 fetches for a hashed bundle name like `index-ozS_Ts9Q.js`, all exactly the same
 byte size, from `VM…` initiators, is an extension content script — not your app.
 Check in an incognito window.
+
+**Debian-based images already have a system user named `proxy`.**
+`python:3.12-slim` and most other Debian-based base images ship a built-in
+`proxy` account at uid 13. `useradd ... proxy` in a Dockerfile fails with exit
+code 9 — a name collision — and `useradd: user 'proxy' already exists` doesn't
+say that the name is baked into the base image rather than something earlier
+in the Dockerfile. Pick a different name for the app user (`appuser`,
+`shinyproxy`, anything not already spoken for) and move on.
 
 ## AWS
 

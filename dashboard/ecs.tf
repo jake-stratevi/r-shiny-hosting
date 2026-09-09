@@ -77,6 +77,21 @@ resource "aws_ecs_task_definition" "this" {
 # ---------------------------------------------------------------------------
 # Deployed at desired_count 0. The waker and sleeper own it from then on, so
 # Terraform ignores it. Terraform owns the task definition and wiring.
+#
+# The service itself is UNCONDITIONAL in both modes -- the proxy scales it with
+# UpdateService exactly as the waker/sleeper do, so it is the one thing both
+# paths need. Only its load balancer attachment is conditional: a proxied app is
+# reached at its task ENI's private IP, not through a target group
+# (docs/design/proxy.md, "The proxy connects to app tasks directly").
+#
+# Cutover is IN-PLACE, not a replacement. `load_balancer` is not ForceNew in
+# aws provider ~> 5.60 and this service uses the default ECS rolling deployment
+# controller, which ECS lets you re-wire with UpdateService. Verified against
+# the live state: `terraform plan -var proxied=true` reports
+# "aws_ecs_service.this will be updated in-place", removing the load_balancer
+# block and health_check_grace_period_seconds, with 0 to add and 0 replaced.
+# The service ARN, name and desired_count survive, so the proxy can keep using
+# them and rollback is equally in-place.
 # ---------------------------------------------------------------------------
 
 resource "aws_ecs_service" "this" {
@@ -89,8 +104,9 @@ resource "aws_ecs_service" "this" {
   enable_execute_command = true
 
   # Give a cold-starting R container time to load its packages before the load
-  # balancer starts failing it.
-  health_check_grace_period_seconds = 120
+  # balancer starts failing it. Only valid on a service that HAS a load
+  # balancer, so it goes null with the load_balancer block below.
+  health_check_grace_period_seconds = var.proxied ? null : 120
 
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 200
@@ -101,12 +117,21 @@ resource "aws_ecs_service" "this" {
     assign_public_ip = true # no NAT Gateway; see platform/network.tf
   }
 
-  load_balancer {
-    target_group_arn = aws_lb_target_group.ecs.arn
-    container_name   = var.app_key
-    container_port   = var.container_port
+  # Legacy path only. Empty for_each = no load_balancer block at all, which is
+  # what a proxied service wants.
+  dynamic "load_balancer" {
+    for_each = var.proxied ? [] : [1]
+
+    content {
+      target_group_arn = aws_lb_target_group.ecs[0].arn
+      container_name   = var.app_key
+      container_port   = var.container_port
+    }
   }
 
+  # NEVER remove this, in either mode. The waker/sleeper (legacy) and the proxy
+  # (proxied) both drive desired_count at runtime; Terraform owns the service's
+  # existence, they own its scale.
   lifecycle {
     ignore_changes = [desired_count]
   }

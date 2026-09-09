@@ -23,11 +23,17 @@ EVENT_DENY = "deny"
 EVENT_WAKE = "wake"
 EVENT_SLEEP = "sleep"
 EVENT_EXPIRED = "expired"
+#: The sleeper's C1 hard cap: a service that stayed awake past
+#: max_session_hours, scaled to zero regardless of open sockets or recent
+#: requests. Distinct from EVENT_SLEEP so the audit trail can tell "nobody was
+#: using it" apart from "somebody was, and the cap ended their session anyway".
+EVENT_FORCE_SLEEP = "force_sleep"
 
 #: Allow events are collapsed per host+email for this long. A single Shiny
 #: page load is dozens of asset requests by the same person to the same host;
 #: a row for each would turn "cents of DynamoDB" into real money and make the
-#: trail unreadable. Denials, wakes, sleeps and expiries are NEVER collapsed.
+#: trail unreadable. Denials, wakes, sleeps, expiries and force-sleeps are
+#: NEVER collapsed.
 ALLOW_WINDOW = 600.0
 
 #: 90 days, per the design spec, written into every row as the table's TTL

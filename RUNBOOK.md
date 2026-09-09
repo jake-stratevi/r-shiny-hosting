@@ -666,6 +666,63 @@ Leave the now-empty `terraform.tfstate` / `terraform.tfstate.backup` that
 Terraform itself leaves behind after moving to a remote backend — harmless,
 and already excluded from commits by `.gitignore`.
 
+## Proxy operations
+
+The proxy is the ADR-0014 control plane piece: one always-on service that
+terminates every app hostname, checks entitlement, and wakes the right ECS
+service. See [docs/design/proxy.md](docs/design/proxy.md) for how it decides
+what to do with a request — this section is just the day-to-day commands.
+
+### Build and push the proxy image
+
+```powershell
+cd proxy-app
+docker build --platform linux/amd64 -t shiny-proxy .
+
+cmd /c "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 652063276768.dkr.ecr.us-east-1.amazonaws.com"
+
+docker tag shiny-proxy:latest 652063276768.dkr.ecr.us-east-1.amazonaws.com/shiny-proxy:latest
+docker push 652063276768.dkr.ecr.us-east-1.amazonaws.com/shiny-proxy:latest
+
+aws ecs update-service --cluster shiny-cluster --service shiny-proxy --force-new-deployment
+```
+
+The ECR login has to run exactly as written — see `docs/GOTCHAS.md` on why
+`docker login --password-stdin` still 400s if PowerShell touches the piped
+password at any point. The whole pipe has to stay inside `cmd`.
+
+### Seed an app into the proxy's table
+
+`proxy-app/seed.py` writes the routing row the proxy reads to decide which ECS
+service and target group a hostname belongs to. Always dry-run first — a bad
+row means the proxy silently 404s or wakes the wrong service, and the audit
+table is a much worse place to discover that than a diff:
+
+```powershell
+python proxy-app/seed.py --dry-run --table shiny-proxy-apps
+# review the printed row, then actually write it:
+python proxy-app/seed.py --table shiny-proxy-apps
+```
+
+### Migrating an app to the proxy
+
+Checklist, in order — full rationale for each step is in
+[docs/design/proxy.md](docs/design/proxy.md):
+
+1. Add the app's hostname to `app_hosts` in `proxy/terraform.tfvars`, plan and
+   apply the `proxy` stack.
+2. Seed the app's row (above) — `--dry-run` first, then for real.
+3. Set `proxied = true` in the app's own `terraform.tfvars`, then plan and
+   apply that stack. Do this while the app is asleep: the ECS service gets
+   recreated as part of the cutover, at desired count 0, so there's no
+   traffic to drop.
+4. Verify the full cycle through the proxy — hit the hostname cold (wake),
+   use the app (stays up), then leave it and confirm it sleeps again — and
+   check `shiny-proxy-audit` shows the requests you'd expect for each phase.
+
+Rollback is the same lever in reverse: set `proxied = false` in the app's
+`terraform.tfvars` and apply. That's a single flag, not a re-migration.
+
 ## Teardown
 
 Reverse order — the dashboard's listener rule attaches to the platform's

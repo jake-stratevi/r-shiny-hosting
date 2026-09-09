@@ -36,6 +36,7 @@ KNOWN_MODES = IMPLEMENTED_MODES | RESERVED_MODES
 #: Defaults applied to any item that omits the attribute.
 DEFAULT_CONTAINER_PORT = 3838
 DEFAULT_IDLE_MINUTES = 15
+DEFAULT_MAX_SESSION_HOURS = 0  # 0/absent means uncapped -- see App.has_session_cap
 
 #: A key that will never exist. /__proxy/readyz reads it because GetItem is
 #: already in the task's IAM policy and DescribeTable deliberately is not --
@@ -87,6 +88,15 @@ class App:
     idle_minutes: int = DEFAULT_IDLE_MINUTES
     expires_at: int = 0  # epoch seconds; 0 means never
     last_active: int = 0  # epoch seconds, written at most once a minute
+    # --- force-sleep cap (C1) ------------------------------------------------
+    # The sleeper treats an open websocket as activity (activity.py), so a
+    # browser tab left open keeps an expensive app -- the model at $0.233/hr --
+    # awake indefinitely. max_session_hours is the hard ceiling: once a service
+    # has been continuously awake longer than the cap, the sleeper force-sleeps
+    # it even with open sockets or recent requests. Users lose their session
+    # (acceptable -- the wake page is one refresh away); money stops burning.
+    max_session_hours: int = DEFAULT_MAX_SESSION_HOURS  # hours; 0/absent = uncapped
+    awake_since: int = 0  # epoch seconds; 0 means "not currently tracked awake"
 
     @classmethod
     def create(
@@ -102,6 +112,8 @@ class App:
         idle_minutes: int | None = None,
         expires_at: int | None = None,
         last_active: int | None = None,
+        max_session_hours: int | None = None,
+        awake_since: int | None = None,
     ) -> "App":
         """Build a row with defaults applied and comparisons pre-normalized."""
         return cls(
@@ -119,6 +131,11 @@ class App:
             idle_minutes=int(idle_minutes) if idle_minutes else DEFAULT_IDLE_MINUTES,
             expires_at=int(expires_at or 0),
             last_active=int(last_active or 0),
+            # Unlike idle_minutes, a falsy value here is a real answer (no
+            # cap), not "unset -- fall back to a default" -- the default is
+            # already 0.
+            max_session_hours=int(max_session_hours or 0),
+            awake_since=int(awake_since or 0),
         )
 
     def allows(self, email: str) -> bool:
@@ -140,6 +157,14 @@ class App:
         minutes = self.idle_minutes if self.idle_minutes > 0 else DEFAULT_IDLE_MINUTES
         return minutes * 60.0
 
+    def has_session_cap(self) -> bool:
+        """Does this app have a hard force-sleep ceiling on awake time?"""
+        return self.max_session_hours > 0
+
+    def max_session_seconds(self) -> float:
+        """The cap in seconds. Meaningless when :meth:`has_session_cap` is False."""
+        return self.max_session_hours * 3600.0
+
 
 # --- persistence contract --------------------------------------------------
 
@@ -156,6 +181,8 @@ class AppStore(Protocol):
     async def apps(self) -> list[App]: ...
 
     async def set_last_active(self, host: str, ts: int) -> None: ...
+
+    async def set_awake_since(self, host: str, ts: int) -> None: ...
 
     async def set_status(self, host: str, status: str) -> None: ...
 
@@ -220,6 +247,11 @@ class CachedRegistry:
     async def set_last_active(self, host: str, ts: int) -> None:
         await self._store.set_last_active(host, ts)
 
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        # Does not affect the access decision, so no cache invalidation --
+        # same as set_last_active.
+        await self._store.set_awake_since(host, ts)
+
     async def set_status(self, host: str, status: str) -> None:
         self.invalidate(host)
         await self._store.set_status(host, status)
@@ -253,6 +285,10 @@ def app_item(app: App) -> dict[str, dict[str, Any]]:
         item["expires_at"] = {"N": str(app.expires_at)}
     if app.last_active:
         item["last_active"] = {"N": str(app.last_active)}
+    if app.max_session_hours:
+        item["max_session_hours"] = {"N": str(app.max_session_hours)}
+    if app.awake_since:
+        item["awake_since"] = {"N": str(app.awake_since)}
     return item
 
 
@@ -269,6 +305,8 @@ def app_from_item(item: dict[str, dict[str, Any]]) -> App:
         idle_minutes=_read_n(item, "idle_minutes"),
         expires_at=_read_n(item, "expires_at"),
         last_active=_read_n(item, "last_active"),
+        max_session_hours=_read_n(item, "max_session_hours"),
+        awake_since=_read_n(item, "awake_since"),
     )
 
 
@@ -357,6 +395,22 @@ class DynamoAppStore:
             ExpressionAttributeValues={":ts": {"N": str(int(ts))}},
         )
 
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        """Best-effort, same pattern as :meth:`set_last_active`.
+
+        Called with ``ts=0`` to clear the attribute once a service is observed
+        asleep -- a plain SET rather than REMOVE, so this stays one shape.
+        """
+        await asyncio.to_thread(
+            self._client.update_item,
+            TableName=self._table,
+            Key={"host": {"S": normalize_host(host)}},
+            UpdateExpression="SET awake_since = :ts",
+            ConditionExpression="attribute_exists(#host)",
+            ExpressionAttributeNames={"#host": "host"},
+            ExpressionAttributeValues={":ts": {"N": str(int(ts))}},
+        )
+
     async def set_status(self, host: str, status: str) -> None:
         # `status` is a DynamoDB reserved word; it has to go through a name
         # placeholder or the update expression is rejected.
@@ -395,6 +449,7 @@ __all__ = [
     "DEFAULT_CACHE_TTL",
     "DEFAULT_CONTAINER_PORT",
     "DEFAULT_IDLE_MINUTES",
+    "DEFAULT_MAX_SESSION_HOURS",
     "IMPLEMENTED_MODES",
     "KNOWN_MODES",
     "MODE_ALL_USERS",

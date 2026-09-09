@@ -6,6 +6,23 @@ half) and is phase 1 of the ADR-0014 reaper. It is deliberately dull: read the
 table, ask ECS, act, audit. It holds no state of its own, so a second proxy
 task running the same loop reaches the same conclusion and its UpdateService
 is a harmless no-op.
+
+--- force-sleep cap (C1) -----------------------------------------------------
+
+The sleeper treats an open websocket as activity (activity.py), so a browser
+tab left open keeps an expensive app -- the model at $0.233/hr -- awake
+indefinitely. ``max_session_hours`` is the hard ceiling: once a service has
+been continuously awake longer than the cap, this loop force-sleeps it even
+with open sockets or recent requests. Users lose their session, which is
+acceptable (the wake page is one refresh away); money stops burning.
+
+``awake_since`` is what "continuously awake" is measured from. The proxy sets
+it when it wakes an app (server.Proxy._wake); this loop fills in the two cases
+the wake path cannot see -- a service running with no awake_since recorded
+(woken by something else, or a proxy that restarted mid-session) sets it to
+now rather than guessing at history, and a service observed at 0 clears it.
+Conservative both ways: never undercounts the REMAINING time before a cap
+trips, never force-sleeps early off history nobody actually observed.
 """
 
 from __future__ import annotations
@@ -99,7 +116,7 @@ class Loop:
                     continue
                 if app.status != registry.STATUS_ACTIVE:
                     continue
-                await self._sleep(app, now)
+                await self._track_and_sleep(app, now)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -137,22 +154,96 @@ class Loop:
         )
         return True
 
-    async def _sleep(self, app: App, now: float) -> None:
+    async def _track_and_sleep(self, app: App, now: float) -> None:
+        """Keep ``awake_since`` in step with reality, then decide whether to
+        force-sleep (cap) or idle-sleep (no recent activity).
+
+        One ``describe_service`` call covers both decisions below, rather than
+        the bookkeeping and the sleeping each fetching their own state.
+        """
+        try:
+            state = await self._scaler.state(app.ecs_service)
+        except Exception as exc:
+            self._log.error(
+                "sleeper: cannot describe service",
+                extra={"host": app.host, "service": app.ecs_service, "reason": str(exc)},
+            )
+            return
+
+        running = state.exists and state.desired > 0
+        if not running:
+            # Observed at 0: nothing to force-sleep or idle-sleep, and any
+            # awake_since left over from before is now meaningless.
+            if app.awake_since:
+                await self._set_awake_since(app, 0)
+            return
+
+        awake_since = app.awake_since
+        if not awake_since:
+            # Running, but this row has no memory of when that started -- woken
+            # by something other than the proxy's own wake path, or a proxy
+            # that restarted mid-session. Start counting from now rather than
+            # guessing at unknown history: this can never undercount the
+            # REMAINING time before a cap trips, and never force-sleeps early
+            # off a history nobody actually observed.
+            awake_since = int(now)
+            await self._set_awake_since(app, awake_since)
+
+        # The cap check runs before the idle check and ignores activity and
+        # open sockets entirely -- that is the whole point of C1.
+        if app.has_session_cap() and now - awake_since > app.max_session_seconds():
+            await self._force_sleep(app, state, now)
+            return
+
+        await self._idle_sleep(app, state, now)
+
+    async def _force_sleep(self, app: App, state: ServiceState, now: float) -> None:
+        if not await self._scale(app, state, "sleeper"):
+            return
+        await self._set_awake_since(app, 0)
+        self._audit.record(Event(host=app.host, event=audit_mod.EVENT_FORCE_SLEEP, at=now))
+        self._log.info(
+            "app force-slept: session cap exceeded",
+            extra={
+                "host": app.host,
+                "app_key": app.app_key,
+                "max_session_hours": app.max_session_hours,
+            },
+        )
+
+    async def _idle_sleep(self, app: App, state: ServiceState, now: float) -> None:
         if self._activity.sockets(app.host) > 0:
             return
         if now - self._last_active(app) < app.idle_after_seconds():
             return
 
-        if not await self._scale_to_zero(app, "sleeper"):
+        if not await self._scale(app, state, "sleeper"):
             return
 
+        await self._set_awake_since(app, 0)
         self._audit.record(Event(host=app.host, event=audit_mod.EVENT_SLEEP, at=now))
         self._log.info(
             "app asleep",
             extra={"host": app.host, "app_key": app.app_key, "idle_minutes": app.idle_minutes},
         )
 
+    async def _set_awake_since(self, app: App, ts: int) -> None:
+        """Best-effort, like every other write this loop makes: a failure here
+        must not stop the pass, and never blocks scaling."""
+        try:
+            await self._store.set_awake_since(app.host, ts)
+        except Exception as exc:
+            self._log.error(
+                "sleeper: cannot persist awake_since",
+                extra={"host": app.host, "reason": str(exc)},
+            )
+
     async def _scale_to_zero(self, app: App, who: str) -> bool:
+        """Fetch state and scale to zero if not already there.
+
+        Used by the reaper, which (unlike ``_track_and_sleep``) has no other
+        reason to describe the service first.
+        """
         try:
             state = await self._scaler.state(app.ecs_service)
         except Exception as exc:
@@ -161,6 +252,9 @@ class Loop:
                 extra={"host": app.host, "service": app.ecs_service, "reason": str(exc)},
             )
             return False
+        return await self._scale(app, state, who)
+
+    async def _scale(self, app: App, state: ServiceState, who: str) -> bool:
         if not state.exists or state.desired == 0:
             return False
         try:

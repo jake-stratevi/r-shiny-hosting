@@ -1,9 +1,20 @@
 # ---------------------------------------------------------------------------
 # All AWS/ApplicationELB metrics, which are free. HealthyHostCount is a good
 # proxy for "a task is awake and billing".
+#
+# Both resources below are `count = var.proxied ? 0 : 1` because every metric
+# they plot is dimensioned on this app's ECS target group, which only exists on
+# the legacy request path (alb.tf). A proxied app has no target group, so
+# AWS/ApplicationELB has nothing to say about it -- the proxy's own structured
+# logs and the shared proxy dashboard replace this. See docs/design/proxy.md.
+#
+# Rollback (proxied = false + apply) recreates alarm and dashboard as they are
+# here; CloudWatch metric history is retained independently of them.
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_metric_alarm" "stuck_running" {
+  count = var.proxied ? 0 : 1
+
   alarm_name          = "${local.name}-stuck-running"
   comparison_operator = "GreaterThanThreshold"
   evaluation_periods  = var.stuck_alarm_hours
@@ -24,6 +35,8 @@ resource "aws_cloudwatch_metric_alarm" "stuck_running" {
 }
 
 resource "aws_cloudwatch_dashboard" "this" {
+  count = var.proxied ? 0 : 1
+
   dashboard_name = "${local.name}-runtime"
 
   dashboard_body = jsonencode({

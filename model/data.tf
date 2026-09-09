@@ -34,14 +34,21 @@ locals {
   subnet_ids         = split(",", data.aws_ssm_parameter.subnet_ids.value)
   log_retention_days = tonumber(data.aws_ssm_parameter.log_retention_days.value)
 
+  # Both of these read resources that only exist on the legacy request path
+  # (var.proxied = false), so both use one() over a splat: the value when the
+  # resource is there, null when it is not. Everything that consumes them --
+  # the waker/sleeper Lambdas, the listener rule, the alarm and the CloudWatch
+  # dashboard -- is conditional on the same flag, so the nulls are never read.
+  # See docs/design/proxy.md and the banner in alb.tf.
+
   cognito_config = {
     user_pool_arn = data.aws_ssm_parameter.cognito_user_pool_arn.value
-    client_id     = aws_cognito_user_pool_client.this.id
+    client_id     = one(aws_cognito_user_pool_client.this[*].id)
     domain        = data.aws_ssm_parameter.cognito_domain.value
   }
 
   # CloudWatch dimension is the ARN suffix, e.g. targetgroup/name/1234abcd
-  ecs_tg_dimension = element(split(":", aws_lb_target_group.ecs.arn), 5)
+  ecs_tg_dimension = one([for arn in aws_lb_target_group.ecs[*].arn : element(split(":", arn), 5)])
 
   # Reserve one core for the Shiny process itself. 1024 CPU units = 1 vCPU.
   cpu_workers = max(1, floor(var.cpu / 1024) - 1)

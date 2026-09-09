@@ -93,6 +93,10 @@ def app_from_entry(entry: dict[str, Any], options: Options = Options()) -> App:
         allowed_emails=entry.get("allowed_emails") or (),
         idle_minutes=entry.get("idle_minutes") or options.idle_minutes,
         expires_at=entry.get("expires_at") or 0,
+        # No CLI default, unlike idle_minutes/container_port: the only sane
+        # default is uncapped (0), which App.create already applies when the
+        # catalog entry omits the key entirely.
+        max_session_hours=entry.get("max_session_hours") or 0,
     )
 
     if app.access_mode not in registry.IMPLEMENTED_MODES:

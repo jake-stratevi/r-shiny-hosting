@@ -25,8 +25,42 @@ variable "subdomain" {
 }
 
 variable "listener_rule_priority" {
-  description = "Must be unique across every app on the shared ALB listener. Keep a register: dashboard 100, model 200, next app 300."
+  description = "Must be unique across every app on the shared ALB listener. Keep a register: dashboard 100, model 200, next app 300. Ignored when proxied = true -- no rule is created."
   type        = number
+}
+
+# --- Migration to the authorizing proxy -------------------------------------
+#
+# See docs/design/proxy.md, "Routing: catch-all, lowest precedence, migrate
+# app-by-app". The proxy is an always-on ECS service behind ONE priority-5000
+# catch-all listener rule for *.tools.stratevi.com. It authenticates there with
+# a shared Cognito client, connects straight to the task ENI's private IP, and
+# does wake-on-request and server-side sleep itself.
+#
+# proxied = false (default): exactly today's behaviour. This stack owns its host
+#   listener rule, the never-matches ECS-association rule, both target groups,
+#   the waker and sleeper Lambdas with their log groups and EventBridge
+#   schedule, its own Cognito app client, and the target-group-dimensioned alarm
+#   and CloudWatch dashboard.
+#
+# proxied = true: none of that is created. What remains is what the proxy needs
+#   and cannot own -- the ECS service and task definition, the ECR repo and
+#   lifecycle policy, the per-app task IAM role, the DNS record and the app log
+#   group.
+#
+# Before flipping to true: add https://<host>/oauth2/idpresponse to the shared
+# proxy Cognito client's callbacks, and seed this app's row in
+# shiny-proxy-apps. Otherwise the first request after apply has nowhere to go.
+#
+# Rollback is symmetrical -- set it back to false and apply; every resource
+# above is recreated from this same configuration. Delete the app's
+# shiny-proxy-apps row in the same change, or the proxy and the sleeper will
+# both drive desired_count. The ECS service itself is updated IN PLACE in both
+# directions -- it is not replaced, and its ARN does not change (see ecs.tf).
+variable "proxied" {
+  description = "true hands this host to the authorizing proxy: skip the per-app listener rules, target groups, waker/sleeper Lambdas, Cognito client and target-group monitoring. See docs/design/proxy.md."
+  type        = bool
+  default     = false
 }
 
 # --- Task sizing ------------------------------------------------------------

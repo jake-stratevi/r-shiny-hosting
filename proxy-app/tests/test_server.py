@@ -14,6 +14,7 @@ from multidict import CIMultiDict
 
 from proxy_app import pages, server
 from proxy_app.identity import NO_EMAIL_LABEL
+from proxy_app.registry import App
 
 
 class Stub:
@@ -34,6 +35,54 @@ def proxy(**overrides) -> server.Proxy:
     defaults = dict(apps=None, tasks=None, activity=None, recorder=None, session=None)
     defaults.update(overrides)
     return server.Proxy(**defaults)
+
+
+async def settle() -> None:
+    """Let the proxy's fire-and-forget awake_since persist task run."""
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+class FakeRegistryForWake:
+    """Just enough of RegistryLike to drive ``_wake``."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.awake_since_writes: list[tuple[str, int]] = []
+        self.fail = fail
+
+    async def app(self, host: str):
+        return None
+
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        if self.fail:
+            raise RuntimeError("dynamodb is unhappy")
+        self.awake_since_writes.append((host, ts))
+
+
+class FakeTasksForWake:
+    def __init__(self, *, woken: bool) -> None:
+        self._woken = woken
+
+    async def task_ip(self, service: str) -> str:
+        return ""
+
+    async def wake(self, service: str) -> bool:
+        return self._woken
+
+    def forget(self, service: str) -> None:
+        pass
+
+
+class FakeRecorderForWake:
+    def __init__(self) -> None:
+        self.events = []
+
+    def record(self, event) -> None:
+        self.events.append(event)
+
+
+def wake_row() -> App:
+    return App.create(host="model.tools.stratevi.com", app_key="model", ecs_service="shiny-model")
 
 
 # --- the reserved namespace ------------------------------------------------
@@ -98,6 +147,60 @@ async def test_an_unknown_reserved_path_is_404_and_never_forwarded():
     response = await proxy().handle(request(path="/__proxy/anything-else"))
     assert response.status == 404
     assert response.text.strip() == "not found"
+
+
+# --- wake persists awake_since (C1) -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_real_wake_persists_awake_since_off_the_request_path():
+    apps = FakeRegistryForWake()
+    handler = proxy(
+        apps=apps,
+        tasks=FakeTasksForWake(woken=True),
+        recorder=FakeRecorderForWake(),
+        clock=lambda: 1_700_000_000.0,
+    )
+
+    response = await handler._wake("model.tools.stratevi.com", wake_row())
+    assert response.status == 200  # the starting page; wake never fails the request
+
+    await settle()
+    assert apps.awake_since_writes == [("model.tools.stratevi.com", 1_700_000_000)]
+
+
+@pytest.mark.asyncio
+async def test_an_idempotent_wake_does_not_re_persist_awake_since():
+    """Every request during a 30-60s cold start calls _wake; only the one that
+    actually transitions desiredCount 0->1 should touch the row."""
+    apps = FakeRegistryForWake()
+    handler = proxy(
+        apps=apps,
+        tasks=FakeTasksForWake(woken=False),
+        recorder=FakeRecorderForWake(),
+        clock=lambda: 1_700_000_000.0,
+    )
+
+    await handler._wake("model.tools.stratevi.com", wake_row())
+    await settle()
+
+    assert apps.awake_since_writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_failing_awake_since_write_does_not_escape_the_wake_path():
+    apps = FakeRegistryForWake(fail=True)
+    handler = proxy(
+        apps=apps,
+        tasks=FakeTasksForWake(woken=True),
+        recorder=FakeRecorderForWake(),
+        clock=lambda: 1_700_000_000.0,
+    )
+
+    response = await handler._wake("model.tools.stratevi.com", wake_row())
+    await settle()  # must not raise
+
+    assert response.status == 200
 
 
 # --- header plumbing -------------------------------------------------------

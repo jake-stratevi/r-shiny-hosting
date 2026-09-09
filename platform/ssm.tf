@@ -12,6 +12,7 @@ locals {
   exports = {
     vpc_id                  = aws_vpc.this.id
     task_security_group_id  = aws_security_group.tasks.id
+    alb_security_group_id   = aws_security_group.alb.id
     alb_arn                 = aws_lb.this.arn
     alb_dns_name            = aws_lb.this.dns_name
     alb_zone_id             = aws_lb.this.zone_id

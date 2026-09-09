@@ -22,11 +22,24 @@ resource "aws_security_group" "proxy" {
 
 resource "aws_vpc_security_group_ingress_rule" "proxy_from_alb" {
   security_group_id            = aws_security_group.proxy.id
-  referenced_security_group_id = data.aws_security_group.alb.id
+  referenced_security_group_id = data.aws_ssm_parameter.alb_security_group_id.value
   from_port                    = var.container_port
   to_port                      = var.container_port
   ip_protocol                  = "tcp"
   description                  = "Proxy service from ALB only"
+}
+
+# The proxy forwards straight to app task IPs (docs/design/proxy.md), so the
+# SHARED tasks SG -- which otherwise only admits the ALB on 3838 -- must also
+# admit the proxy. Owned here, not in platform or the app stacks: the rule
+# exists because the proxy exists, and dies with it.
+resource "aws_vpc_security_group_ingress_rule" "apps_from_proxy" {
+  security_group_id            = data.aws_ssm_parameter.task_security_group_id.value
+  referenced_security_group_id = aws_security_group.proxy.id
+  from_port                    = 3838
+  to_port                      = 3838
+  ip_protocol                  = "tcp"
+  description                  = "App tasks from the authorizing proxy (direct-to-task routing)"
 }
 
 resource "aws_vpc_security_group_egress_rule" "proxy_all" {
@@ -87,11 +100,15 @@ resource "aws_ecs_task_definition" "this" {
     }
 
     healthCheck = {
-      command     = ["CMD-SHELL", "curl -fsS http://localhost:${var.container_port}/__proxy/healthz || exit 1"]
+      # python:3.12-slim ships no curl -- a CMD-SHELL curl exits 127 and ECS
+      # kills the task ~90s after boot, in a loop. Probe with the stdlib
+      # instead (same command as the Dockerfile HEALTHCHECK, which ECS
+      # ignores -- only this block counts).
+      command     = ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:${var.container_port}/__proxy/healthz', timeout=3).status == 200 else 1)\""]
       interval    = 15
       timeout     = 5
       retries     = 3
-      startPeriod = 15 # a static Go binary needs no package-loading grace period, unlike the R apps
+      startPeriod = 15
     }
   }])
 }

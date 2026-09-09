@@ -189,6 +189,56 @@ def test_per_entry_overrides_beat_the_defaults():
     assert app.status == registry.STATUS_DISABLED
 
 
+def test_max_session_hours_is_passed_through_when_the_catalog_sets_it():
+    app = seed.app_from_entry(
+        {
+            "key": "model",
+            "url": "https://model.tools.stratevi.com",
+            "access_mode": "all_users",
+            "max_session_hours": 8,
+        }
+    )
+    assert app.max_session_hours == 8
+    assert app.has_session_cap() is True
+
+
+def test_max_session_hours_defaults_to_uncapped_when_the_catalog_omits_it():
+    app = seed.app_from_entry(
+        {
+            "key": "model",
+            "url": "https://model.tools.stratevi.com",
+            "access_mode": "all_users",
+        }
+    )
+    assert app.max_session_hours == registry.DEFAULT_MAX_SESSION_HOURS
+    assert app.has_session_cap() is False
+
+
+def test_dry_run_shows_max_session_hours_when_the_catalog_sets_it():
+    rendered = seed.render_items(
+        [
+            seed.app_from_entry(
+                {
+                    "key": "model",
+                    "url": "https://model.tools.stratevi.com",
+                    "access_mode": "all_users",
+                    "max_session_hours": 8,
+                }
+            )
+        ]
+    )
+    assert '"max_session_hours"' in rendered
+    assert '"N": "8"' in rendered
+
+
+def test_the_real_catalog_has_no_session_cap_so_dry_run_omits_the_attribute(catalog):
+    """catalog.yaml does not (yet) set max_session_hours for either app --
+    confirms the key stays truly optional rather than silently defaulting to
+    something nonzero."""
+    rendered = seed.render_items(seed.apps_from_catalog(catalog))
+    assert "max_session_hours" not in rendered
+
+
 def test_the_service_prefix_option_matches_the_terraform_project_prefix():
     app = seed.app_from_entry(
         {"key": "model", "url": "https://model.tools.stratevi.com", "access_mode": "all_users"},
