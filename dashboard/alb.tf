@@ -70,6 +70,8 @@ resource "aws_lb_listener_rule" "this" {
     }
   }
 
+  # Auth runs BEFORE the waker. An unauthenticated visitor cannot trigger a
+  # task to start, which closes the obvious cost-abuse hole.
   action {
     type  = "authenticate-cognito"
     order = 1
@@ -90,9 +92,9 @@ resource "aws_lb_listener_rule" "this" {
     target_group_arn = aws_lb_target_group.waker.arn
   }
 
-   lifecycle {
-     ignore_changes = [action]
-   }
+  lifecycle {
+    ignore_changes = [action]
+  }
 }
 
 # ---------------------------------------------------------------------------

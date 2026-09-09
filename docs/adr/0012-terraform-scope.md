@@ -1,6 +1,6 @@
 # ADR-0012: Terraform for the platform, AWS SDK for dynamic apps
 
-**Status:** Proposed
+**Status:** Accepted — the portal that does the SDK provisioning is scoped in [ADR-0014](0014-standalone-control-plane.md)
 **Date:** 2026-09-08
 
 ## Context

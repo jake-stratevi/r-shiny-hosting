@@ -18,7 +18,6 @@ data "aws_ssm_parameter" "vpc_id" { name = "${local.ssm}/vpc_id" }
 data "aws_ssm_parameter" "ecs_cluster_name" { name = "${local.ssm}/ecs_cluster_name" }
 data "aws_ssm_parameter" "ecs_cluster_arn" { name = "${local.ssm}/ecs_cluster_arn" }
 data "aws_ssm_parameter" "task_execution_role_arn" { name = "${local.ssm}/task_execution_role_arn" }
-data "aws_ssm_parameter" "task_role_arn" { name = "${local.ssm}/task_role_arn" }
 data "aws_ssm_parameter" "scaler_role_arn" { name = "${local.ssm}/scaler_role_arn" }
 data "aws_ssm_parameter" "cognito_user_pool_id" { name = "${local.ssm}/cognito_user_pool_id" }
 data "aws_ssm_parameter" "cognito_user_pool_arn" { name = "${local.ssm}/cognito_user_pool_arn" }

@@ -11,13 +11,14 @@ changes gets a new ADR that supersedes the old one, rather than an edit.
 | [0004](0004-no-nat-gateway.md) | Public subnets, no NAT Gateway | Accepted |
 | [0005](0005-subdomain-delegation.md) | Delegate `tools.stratevi.com` to Route 53 | Accepted |
 | [0006](0006-heartbeat-idle-detection.md) | Client-side heartbeat for idle detection | Accepted, known fragile |
-| [0007](0007-reuse-hub-cognito-pool.md) | Reuse the Assembled Hub Cognito pool | **Proposed** |
-| [0008](0008-authorization-strategy.md) | Authorization: in-app allowlist now, proxy later | **Proposed** |
-| [0009](0009-remote-state.md) | Terraform state in S3 | **Proposed** |
-| [0010](0010-per-app-iam-roles.md) | Per-app IAM task roles | **Proposed** |
+| [0007](0007-reuse-hub-cognito-pool.md) | Reuse the Assembled Hub Cognito pool | Accepted |
+| [0008](0008-authorization-strategy.md) | Authorization: in-app allowlist now, proxy later | Accepted (allowlist live; proxy folded into ADR-0014) |
+| [0009](0009-remote-state.md) | Terraform state in S3 | Accepted |
+| [0010](0010-per-app-iam-roles.md) | Per-app IAM task roles | Accepted |
 | [0011](0011-fargate-cpu-detection.md) | Worker count from environment, not `detectCores()` | Accepted |
-| [0012](0012-terraform-scope.md) | Terraform for the platform, SDK for dynamic apps | Proposed |
-| [0013](0013-lightweight-shiny-portal.md) | A lightweight Lambda portal at dashboards.tools.stratevi.com | **Proposed** |
+| [0012](0012-terraform-scope.md) | Terraform for the platform, SDK for dynamic apps | Accepted (implemented by ADR-0014) |
+| [0013](0013-lightweight-shiny-portal.md) | A lightweight Lambda portal at dashboards.tools.stratevi.com | Accepted, interim (retired when ADR-0014 ships) |
+| [0014](0014-standalone-control-plane.md) | Standalone Stratevi control plane: proxy + portal as one service | Accepted, not yet built |
 
 **Accepted** means built and deployed. **Proposed** means decided but not yet
 implemented — see [ROADMAP.md](../ROADMAP.md) for sequencing.

@@ -10,7 +10,7 @@ resource "aws_cognito_user_pool_client" "this" {
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
 
-supported_identity_providers = compact([
+  supported_identity_providers = compact([
     "COGNITO",
     data.aws_ssm_parameter.oidc_provider_name.value == "none" ? "" : data.aws_ssm_parameter.oidc_provider_name.value,
   ])

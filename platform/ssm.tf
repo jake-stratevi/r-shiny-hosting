@@ -20,15 +20,15 @@ locals {
     ecs_cluster_name        = aws_ecs_cluster.this.name
     ecs_cluster_arn         = aws_ecs_cluster.this.arn
     task_execution_role_arn = aws_iam_role.task_execution.arn
-    task_role_arn           = aws_iam_role.task.arn
-    scaler_role_arn         = aws_iam_role.scaler.arn
-    cognito_user_pool_id    = var.cognito_user_pool_id
-    cognito_user_pool_arn   = local.cognito_user_pool_arn
-    cognito_domain          = var.cognito_hosted_ui_domain
-    oidc_provider_name      = var.cognito_staff_idp_name
-    route53_zone_id         = var.route53_zone_id
-    domain_name             = var.domain_name
-    log_retention_days      = tostring(var.log_retention_days)
+
+    scaler_role_arn       = aws_iam_role.scaler.arn
+    cognito_user_pool_id  = var.cognito_user_pool_id
+    cognito_user_pool_arn = local.cognito_user_pool_arn
+    cognito_domain        = var.cognito_hosted_ui_domain
+    oidc_provider_name    = var.cognito_staff_idp_name
+    route53_zone_id       = var.route53_zone_id
+    domain_name           = var.domain_name
+    log_retention_days    = tostring(var.log_retention_days)
   }
 }
 

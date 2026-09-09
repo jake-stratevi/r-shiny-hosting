@@ -116,20 +116,16 @@
       "Resource": "*"
     },
     {
-      "Sid": "RemoteStateOptional",
+      "Sid": "ProjectBuckets",
       "Effect": "Allow",
       "Action": [
-        "s3:CreateBucket",
-        "s3:ListBucket",
-        "s3:GetBucketVersioning",
-        "s3:PutBucketVersioning",
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject"
+        "s3:*"
       ],
       "Resource": [
         "arn:aws:s3:::stratevi-tf-state-652063276768",
-        "arn:aws:s3:::stratevi-tf-state-652063276768/*"
+        "arn:aws:s3:::stratevi-tf-state-652063276768/*",
+        "arn:aws:s3:::shiny-*",
+        "arn:aws:s3:::shiny-*/*"
       ]
     },
     {
@@ -149,6 +145,7 @@
         "iam:AttachRolePolicy",
         "iam:DetachRolePolicy",
         "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
         "iam:UpdateAssumeRolePolicy"
       ],
       "Resource": [

@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and fill in. Never commit the real file.
+
+region  = "us-east-1"
+project = "shiny"
+
+# Fixed per docs/design/proxy.md -- do not reuse this priority for anything
+# else. Register: portal 50, dashboard 100, model 200, proxy 5000.
+listener_rule_priority = 5000
+
+proxy_subdomain = "proxy"
+
+# 1 to start; bump to 2 once a paying client depends on this. Terraform owns
+# this count outright -- there is no waker/sleeper to fight over it.
+desired_count = 1
+
+# Add a host here the moment its app stack's own Cognito client/listener rule
+# is deleted and it starts relying on the proxy's shared client instead.
+# "model" is migrated first per the spec (it's currently a dead link anyway).
+app_hosts = [
+  # "model.tools.stratevi.com",
+]
+
+log_level = "info"

@@ -12,13 +12,13 @@ terraform {
     }
   }
 
-  # backend "s3" {
-  #   bucket       = "your-tf-state-bucket"
-  #   key          = "shiny/dashboard.tfstate"
-  #   region       = "us-east-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  backend "s3" {
+    bucket       = "stratevi-tf-state-652063276768"
+    key          = "shiny/dashboard.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
 }
 
 provider "aws" {

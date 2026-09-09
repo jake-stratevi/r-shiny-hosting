@@ -114,8 +114,8 @@ variable "access_mode" {
     Start on emails. Move to groups once they are populated and synced from
     Entra; that is a tfvars change, not a code change.
   EOT
-  type    = string
-  default = "emails"
+  type        = string
+  default     = "emails"
 
   validation {
     condition     = contains(["off", "emails", "groups"], var.access_mode)

@@ -22,7 +22,8 @@ have already been argued out and the alternatives are recorded.
 ```
 platform/        Shared: VPC, ALB, cert, Cognito, ECS cluster, IAM. Deploy first.
 dashboard/       Tarpeyo Sankey app stack. Deployed.
-model/           Microsimulation app stack. Not deployed.
+model/           Microsimulation app stack. Deployed, but its ECR repo is
+                 empty -- the URL is a dead link until an image is pushed.
 portal/          Landing page at dashboards.tools.stratevi.com. See ADR-0013.
 dashboard-app/   Container source for the dashboard.
 iam/             Deployment policy + preflight scripts.
@@ -58,7 +59,10 @@ Removing either makes every apply fight the scaler.
 
 **`listener_rule_priority` must be unique** across all apps on the shared ALB
 listener. Register: portal 50, dashboard 100, model 200, ECS association
-rules at +700 (portal has no ECS association rule -- it's Lambda-only).
+rules at +700 (portal has no ECS association rule -- it's Lambda-only),
+**proxy 5000** (the `*.tools.stratevi.com` catch-all -- must stay the highest
+number so every explicit app rule wins until that app is migrated to the
+proxy; see docs/design/proxy.md).
 
 **Terraform escaping:** `$${` produces a literal `${`, not a literal `$`. Use
 `format()` when you need a dollar sign in a string. This has caused two bugs.

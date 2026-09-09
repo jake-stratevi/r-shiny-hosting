@@ -518,6 +518,154 @@ to Step 2.9.
 | `parameter not found` on dashboard apply | `project` differs between stacks | Make them match, re-apply |
 | Cognito domain apply fails | Prefix already taken globally | Add a suffix and re-apply |
 
+## Migrating existing stacks to S3 state (ADR-0009)
+
+Skip this once it's done — it's a one-time move per stack, not something you
+repeat on every deploy. Read [ADR-0009](docs/adr/0009-remote-state.md) first
+if the account facts below have changed.
+
+At the time this was written, `platform`, `dashboard`, `portal` and `model`
+are all already applied with local `.tfstate` files on one machine (see
+`docs/STATUS.md`). Migrating state does **not** touch the actual AWS
+resources — it moves where Terraform's record of them lives. It's safe to do
+while `dashboard` is serving real traffic.
+
+Order matters less here than in a fresh deploy (nothing depends on state
+location), but do it in this order anyway, so a mistake surfaces on the stack
+you understand best first: **platform → dashboard → model → portal**.
+
+### One-time: create the bucket
+
+```powershell
+cd state-backend
+terraform init
+terraform plan -no-color -out state-backend.tfplan | Tee-Object -FilePath plan.txt
+Select-String -Path plan.txt -Pattern "^Plan:"
+```
+
+Skim the plan — one bucket plus four sub-resources (versioning, encryption,
+public-access block, lifecycle rule), no deletions. Then:
+
+```powershell
+terraform apply state-backend.tfplan
+terraform output bucket_name
+```
+
+Confirm the output is exactly `stratevi-tf-state-652063276768`. The IAM
+policy's `ProjectBuckets` statement names this bucket by its literal ARN
+(its other pattern, `shiny-*`, doesn't match this name), so a different
+suffix here breaks every later `terraform init` with an access-denied error
+that looks like a permissions problem rather than a naming one. Note the
+updated policy JSON must be pushed to AWS as a new policy version (an
+admin action -- `Stratevi_Testing` cannot update its own policy) before any
+of this runs.
+
+### Per stack: platform, then dashboard, then model, then portal
+
+Each stack's `versions.tf` already has its `backend "s3"` block uncommented
+and filled in (bucket above, key `shiny/<stack>.tfstate`, `us-east-1`,
+`encrypt = true`, `use_lockfile = true`). Repeat the following for each stack
+directory, in order:
+
+```powershell
+cd ..\platform      # then ..\dashboard, ..\model, ..\portal in turn
+
+# Snapshot what Terraform currently thinks exists, to diff against after the
+# migration. Count, don't eyeball it -- a silently dropped resource looks
+# identical to a correct migration until the next apply.
+terraform state list | Tee-Object -FilePath state-before.txt
+(Get-Content state-before.txt | Measure-Object -Line).Lines
+
+# Back the local state up before touching anything. The .bak suffix still
+# matches .gitignore's `*.tfstate.*` rule, so this can't get committed either.
+Copy-Item terraform.tfstate terraform.tfstate.bak
+if (Test-Path terraform.tfstate.backup) {
+  Copy-Item terraform.tfstate.backup terraform.tfstate.backup.bak
+}
+
+terraform init -migrate-state
+```
+
+This prompts:
+
+```
+Do you want to copy existing state to the new backend?
+  ...
+  Enter a value:
+```
+
+Type `yes` and press Enter. For a non-interactive run (CI, or a script),
+skip the prompt entirely with `-force-copy` instead of `-migrate-state`'s
+default confirmation:
+
+```powershell
+terraform init -migrate-state -force-copy
+```
+
+Then verify nothing was lost or duplicated:
+
+```powershell
+terraform state list | Tee-Object -FilePath state-after.txt
+(Get-Content state-after.txt | Measure-Object -Line).Lines
+Compare-Object (Get-Content state-before.txt) (Get-Content state-after.txt)
+```
+
+The line count must match exactly, and `Compare-Object` should print
+nothing — same resource addresses, not just the same count. Then confirm the
+plan is still clean:
+
+```powershell
+terraform plan -no-color -out post-migrate.tfplan | Tee-Object -FilePath plan.txt
+Select-String -Path plan.txt -Pattern "^Plan:"
+```
+
+`Plan: 0 to add, 0 to change, 0 to destroy` is what you want — including on
+`platform`, where the `ignore_changes` lifecycle blocks on the listener rule
+and the ECS service should mean the plan stays clean even though the
+waker/sleeper Lambdas mutate both of those at runtime. Anything else: stop
+and investigate before moving to the next stack. Do not apply it.
+
+**dashboard and model are byte-identical Terraform.** If something goes
+wrong on one, check whether the same edit already landed in the other before
+assuming it's stack-specific.
+
+### If the migration is interrupted
+
+`use_lockfile = true` puts the lock in a companion object next to the state
+object in S3, not in a separate DynamoDB table. If `init -migrate-state` dies
+mid-way (closed laptop lid, killed terminal), the next `terraform init` or
+`plan` on that stack reports the state is locked. Force-unlock with the lock
+ID it prints, after confirming nobody else is actually running Terraform
+against that stack:
+
+```powershell
+terraform force-unlock <LOCK_ID>
+```
+
+### Cleaning up the local state files afterward
+
+Once a stack's migration is verified (state list count matches,
+`Compare-Object` is silent, plan is clean), the local files are redundant —
+but don't delete them immediately. Keep the `.bak` copies until you've done
+at least one more `terraform plan` against the S3 backend on a different day,
+so you know the migration held rather than masking a problem that only shows
+up on the next real apply.
+
+After that, delete them. They're not just clutter: a Terraform state file
+holds resource IDs, ARNs, and in places values the AWS provider marks
+sensitive (Cognito app client secrets, for one) in plain text. A stale copy
+on a laptop is exactly the kind of single point of failure ADR-0009 exists to
+retire.
+
+```powershell
+Remove-Item terraform.tfstate.bak
+if (Test-Path terraform.tfstate.backup.bak) { Remove-Item terraform.tfstate.backup.bak }
+```
+
+Leave the now-empty `terraform.tfstate` / `terraform.tfstate.backup` that
+Terraform itself leaves behind after moving to a remote backend — harmless,
+and already excluded from commits by `.gitignore`.
+
 ## Teardown
 
 Reverse order — the dashboard's listener rule attaches to the platform's

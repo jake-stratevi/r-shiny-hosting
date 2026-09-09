@@ -19,9 +19,9 @@ data "aws_ssm_parameter" "domain_name" { name = "${local.ssm}/domain_name" }
 data "aws_ssm_parameter" "log_retention_days" { name = "${local.ssm}/log_retention_days" }
 
 locals {
-  name                = "${var.project}-${var.app_key}"
-  fqdn                = "${var.subdomain}.${data.aws_ssm_parameter.domain_name.value}"
-  log_retention_days  = tonumber(data.aws_ssm_parameter.log_retention_days.value)
+  name               = "${var.project}-${var.app_key}"
+  fqdn               = "${var.subdomain}.${data.aws_ssm_parameter.domain_name.value}"
+  log_retention_days = tonumber(data.aws_ssm_parameter.log_retention_days.value)
 
   # The shared catalog -- see catalog.yaml at the repo root and
   # docs/adr/0013-lightweight-shiny-portal.md. One file, read here and baked

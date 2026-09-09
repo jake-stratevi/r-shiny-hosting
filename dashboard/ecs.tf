@@ -18,7 +18,10 @@ resource "aws_ecs_task_definition" "this" {
   cpu                      = var.cpu
   memory                   = var.memory
   execution_role_arn       = data.aws_ssm_parameter.task_execution_role_arn.value
-  task_role_arn            = data.aws_ssm_parameter.task_role_arn.value
+
+  # Per-app role from iam.tf, not the shared platform one -- ADR-0010. The
+  # execution role above stays shared; it only pulls images and writes logs.
+  task_role_arn = aws_iam_role.task.arn
 
   runtime_platform {
     operating_system_family = "LINUX"

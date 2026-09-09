@@ -1,5 +1,5 @@
 output "url" {
-  value = "https://${local.fqdn}"
+  value     = "https://${local.fqdn}"
   sensitive = true
 }
 
@@ -9,7 +9,7 @@ output "ecr_repository" {
 
 output "docker_push_commands" {
   description = "Build and push this app's image."
-  sensitive = true
+  sensitive   = true
   value = join("\n", [
     "aws ecr get-login-password --region ${var.region} | docker login --username AWS --password-stdin ${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com",
     "docker build --platform linux/amd64 -t ${aws_ecr_repository.this.repository_url}:${var.image_tag} .",

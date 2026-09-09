@@ -21,6 +21,18 @@ resource "aws_lb" "this" {
 
   drop_invalid_header_fields = true
   enable_http2               = true
+
+  # See logging.tf. AWS validates the target S3 bucket's policy at the
+  # moment access logging is enabled/updated, so the policy must already
+  # exist -- hence the explicit depends_on rather than relying on the
+  # implicit reference through aws_s3_bucket.alb_logs.id, which only orders
+  # against the bucket itself, not the policy attached to it.
+  access_logs {
+    bucket  = aws_s3_bucket.alb_logs.id
+    enabled = true
+  }
+
+  depends_on = [aws_s3_bucket_policy.alb_logs]
 }
 
 # One wildcard cert covers every current and future app hostname, so app

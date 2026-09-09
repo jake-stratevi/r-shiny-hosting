@@ -5,6 +5,8 @@
 *.tfstate.*
 *.tfplan
 plan.txt
+state-before.txt
+state-after.txt
 .build/
 
 # Contains real values; keep the .example committed instead

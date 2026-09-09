@@ -1,6 +1,6 @@
 # ADR-0008: Authorization — in-app allowlist now, authorizing proxy later
 
-**Status:** Proposed
+**Status:** Accepted — the "now" allowlist is live; the "later" proxy is scoped and committed in [ADR-0014](0014-standalone-control-plane.md)
 **Date:** 2026-09-08
 
 ## Context

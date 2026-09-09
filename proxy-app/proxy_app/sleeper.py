@@ -1,0 +1,188 @@
+"""The background loop that scales idle apps to zero and expires apps whose
+time is up.
+
+It replaces the per-app sleeper Lambda for migrated apps (ADR-0002's sleeper
+half) and is phase 1 of the ADR-0014 reaper. It is deliberately dull: read the
+table, ask ECS, act, audit. It holds no state of its own, so a second proxy
+task running the same loop reaches the same conclusion and its UpdateService
+is a harmless no-op.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from typing import Callable, Protocol
+
+from . import audit as audit_mod
+from . import registry
+from .audit import Event
+from .ecsctl import ServiceState
+from .registry import App
+
+#: Interval between passes. A code constant, not config: idle_minutes is
+#: measured in tens of minutes, and expiry to the minute is closer than any
+#: reminder email will ever be.
+INTERVAL = 60.0
+
+
+class Scaler(Protocol):
+    """The ECS surface used here."""
+
+    async def state(self, service: str) -> ServiceState: ...
+
+    async def sleep(self, service: str) -> None: ...
+
+
+class ActivitySource(Protocol):
+    """The activity-tracker surface used here."""
+
+    def sockets(self, host: str) -> int: ...
+
+    def last_active(self, host: str) -> float: ...
+
+    @property
+    def boot(self) -> float: ...
+
+
+class Recorder(Protocol):
+    def record(self, event: Event) -> None: ...
+
+
+class Loop:
+    """The sleeper/reaper."""
+
+    def __init__(
+        self,
+        store: registry.AppStore,
+        scaler: Scaler,
+        activity: ActivitySource,
+        recorder: Recorder,
+        log: logging.Logger | None = None,
+        *,
+        clock: Callable[[], float] = time.time,
+        interval: float = INTERVAL,
+    ) -> None:
+        self._store = store
+        self._scaler = scaler
+        self._activity = activity
+        self._audit = recorder
+        self._log = log or logging.getLogger("proxy.sleeper")
+        self._clock = clock
+        self._interval = interval
+
+    async def run(self) -> None:
+        """Tick until cancelled. One bad pass must not end the loop."""
+        while True:
+            try:
+                await asyncio.sleep(self._interval)
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - belt and braces
+                self._log.error("sleeper pass failed", extra={"reason": str(exc)})
+
+    async def tick(self) -> None:
+        """One pass. Public so a test can drive it directly."""
+        now = self._clock()
+
+        try:
+            apps = await self._store.apps()
+        except Exception as exc:
+            self._log.error("sleeper: cannot list apps", extra={"reason": str(exc)})
+            return
+
+        for app in apps:
+            try:
+                if await self._expire(app, now):
+                    continue
+                if app.status != registry.STATUS_ACTIVE:
+                    continue
+                await self._sleep(app, now)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._log.error(
+                    "sleeper: pass failed for app",
+                    extra={"host": app.host, "reason": str(exc)},
+                )
+
+    async def _expire(self, app: App, now: float) -> bool:
+        """Flip a lapsed app to expired and scale it to zero.
+
+        Returns True when the app is expired, whether or not this pass is the
+        one that changed it.
+        """
+        if app.status == registry.STATUS_EXPIRED:
+            return True
+        if not app.is_expired(now):
+            return False
+
+        try:
+            await self._store.set_status(app.host, registry.STATUS_EXPIRED)
+        except Exception as exc:
+            self._log.error(
+                "reaper: cannot mark expired",
+                extra={"host": app.host, "reason": str(exc)},
+            )
+            # Keep going anyway: scaling to zero is the part that costs money,
+            # and the access decision already refuses on the clock alone.
+
+        await self._scale_to_zero(app, "reaper")
+        self._audit.record(Event(host=app.host, event=audit_mod.EVENT_EXPIRED, at=now))
+        self._log.info(
+            "app expired",
+            extra={"host": app.host, "app_key": app.app_key, "expires_at": app.expires_at},
+        )
+        return True
+
+    async def _sleep(self, app: App, now: float) -> None:
+        if self._activity.sockets(app.host) > 0:
+            return
+        if now - self._last_active(app) < app.idle_after_seconds():
+            return
+
+        if not await self._scale_to_zero(app, "sleeper"):
+            return
+
+        self._audit.record(Event(host=app.host, event=audit_mod.EVENT_SLEEP, at=now))
+        self._log.info(
+            "app asleep",
+            extra={"host": app.host, "app_key": app.app_key, "idle_minutes": app.idle_minutes},
+        )
+
+    async def _scale_to_zero(self, app: App, who: str) -> bool:
+        try:
+            state = await self._scaler.state(app.ecs_service)
+        except Exception as exc:
+            self._log.error(
+                f"{who}: cannot describe service",
+                extra={"host": app.host, "service": app.ecs_service, "reason": str(exc)},
+            )
+            return False
+        if not state.exists or state.desired == 0:
+            return False
+        try:
+            await self._scaler.sleep(app.ecs_service)
+        except Exception as exc:
+            self._log.error(
+                f"{who}: cannot scale to zero",
+                extra={"host": app.host, "service": app.ecs_service, "reason": str(exc)},
+            )
+            return False
+        return True
+
+    def _last_active(self, app: App) -> float:
+        """The most generous of: this process's boot time, what this process
+        has seen, and what any proxy task persisted.
+
+        Boot counts because a restarted proxy has no memory of the users
+        currently on an app, and slamming a busy app to zero on deploy is far
+        worse than one wasted idle window.
+        """
+        return max(
+            self._activity.boot,
+            self._activity.last_active(app.host),
+            float(app.last_active),
+        )

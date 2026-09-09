@@ -1,6 +1,6 @@
 # ADR-0013: A lightweight Lambda portal at dashboards.tools.stratevi.com
 
-**Status:** Proposed
+**Status:** Accepted, interim — live at dashboards.tools.stratevi.com; retired when the [ADR-0014](0014-standalone-control-plane.md) proxy ships
 **Date:** 2026-09-08
 
 ## Context

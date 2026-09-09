@@ -23,30 +23,10 @@ resource "aws_iam_role_policy_attachment" "task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-resource "aws_iam_role" "task" {
-  name               = "${local.name}-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
-}
-
-# ECS Exec, so you can shell into a running task to debug R without SSH.
-data "aws_iam_policy_document" "task_exec_channel" {
-  statement {
-    effect = "Allow"
-    actions = [
-      "ssmmessages:CreateControlChannel",
-      "ssmmessages:CreateDataChannel",
-      "ssmmessages:OpenControlChannel",
-      "ssmmessages:OpenDataChannel",
-    ]
-    resources = ["*"]
-  }
-}
-
-resource "aws_iam_role_policy" "task_exec_channel" {
-  name   = "ecs-exec"
-  role   = aws_iam_role.task.id
-  policy = data.aws_iam_policy_document.task_exec_channel.json
-}
+# There is deliberately no shared task role here. Each app stack creates its
+# own `shiny-<app>-task` (ADR-0010) so a compromised app is contained to that
+# app. Only the EXECUTION role stays shared -- it just pulls images and
+# writes logs.
 
 # --- Scaler role, assumed by every app's waker and sleeper Lambdas -----------
 

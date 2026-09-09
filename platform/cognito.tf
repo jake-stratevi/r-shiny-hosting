@@ -21,7 +21,7 @@ variable "cognito_hosted_ui_domain" {
     Find it with:
       aws cognito-idp describe-user-pool --user-pool-id <id> --query "UserPool.Domain" --output text
   EOT
-  type = string
+  type        = string
 }
 
 variable "cognito_staff_idp_name" {
@@ -29,8 +29,8 @@ variable "cognito_staff_idp_name" {
     Name of the Entra federation provider inside the pool. Confirm with:
       aws cognito-idp list-identity-providers --user-pool-id <id> --query "Providers[].ProviderName"
   EOT
-  type    = string
-  default = "Microsoft365"
+  type        = string
+  default     = "Microsoft365"
 }
 
 locals {
