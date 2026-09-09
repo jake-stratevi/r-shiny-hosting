@@ -1,0 +1,548 @@
+# Runbook: Tarpeyo dashboard on AWS
+
+End to end, from "I need a subdomain" to "a client can log in and use it."
+
+Two phases. Phase 1 gets you a delegated subdomain — mostly waiting on other
+people, so start it today. Phase 2 is the deployment, roughly a half day of
+your own time once the DNS is in place.
+
+**Realistic timeline:** 1–5 business days for Phase 1 (IT response time
+dominates), then 3–4 hours for Phase 2.
+
+---
+
+# Phase 1 — Get a delegated subdomain
+
+## The chicken-and-egg problem
+
+You cannot ask IT for delegation before creating the Route 53 hosted zone,
+because the thing you're asking them to add is the list of nameservers that
+zone generates. So: create the empty zone in AWS first, then hand IT the four
+nameservers it produces.
+
+Creating the zone changes nothing about your existing DNS. Until IT adds the
+NS records, the zone simply sits there answering nobody. It costs $0.50/month.
+
+## Step 1.1 — Pick the subdomain
+
+Something that reads well to an external client, because they will see it in
+the address bar:
+
+- `tools.stratevi.com` — good, general purpose, room to grow
+- `apps.stratevi.com` — equally fine
+- `heor-tools.stratevi.com` — narrower; you'll regret it when a non-HEOR app
+  needs a home
+
+Pick one. Everything below assumes `tools.stratevi.com` — substitute yours.
+
+Your apps will live at `dashboard.tools.stratevi.com` and
+`model.tools.stratevi.com`.
+
+## Step 1.2 — Create the hosted zone
+
+```bash
+aws route53 create-hosted-zone \
+  --name tools.stratevi.com \
+  --caller-reference "tools-delegation-$(date +%s)" \
+  --hosted-zone-config Comment="Delegated subdomain for Shiny app platform"
+```
+
+Save the zone ID from the output — it looks like `/hostedzone/Z0123456789ABC`.
+You want just the `Z0123456789ABC` part.
+
+Now get the four nameservers:
+
+```bash
+aws route53 get-hosted-zone \
+  --id Z0123456789ABC \
+  --query 'DelegationSet.NameServers' \
+  --output table
+```
+
+You'll get something like:
+
+```
+ns-1234.awsdns-56.org
+ns-789.awsdns-12.net
+ns-345.awsdns-67.co.uk
+ns-901.awsdns-23.com
+```
+
+Yours will differ. The mixed TLDs are normal and intentional on AWS's part.
+
+## Step 1.3 — Send the request to IT
+
+Draft below. Adjust the tone to your org, but keep the four NS records and the
+exact record name — those are what actually matters, and getting either wrong
+means a second round trip.
+
+> **Subject:** DNS request — delegate `tools.stratevi.com` to AWS Route 53
+>
+> Hi [team],
+>
+> I'm standing up a small internal web app platform on our AWS account and need
+> a subdomain delegated so the platform can manage its own DNS records and TLS
+> certificates automatically.
+>
+> **What I'm asking for:** four NS records on `stratevi.com` for the subdomain
+> `tools`, pointing at AWS Route 53.
+>
+> | Name | Type | TTL | Value |
+> |---|---|---|---|
+> | `tools.stratevi.com` | NS | 3600 | `ns-1234.awsdns-56.org.` |
+> | `tools.stratevi.com` | NS | 3600 | `ns-789.awsdns-12.net.` |
+> | `tools.stratevi.com` | NS | 3600 | `ns-345.awsdns-67.co.uk.` |
+> | `tools.stratevi.com` | NS | 3600 | `ns-901.awsdns-23.com.` |
+>
+> (Some DNS panels want the trailing dot, some add it themselves. Four separate
+> NS records on the same name, not one record with four values, unless your
+> tool models it that way.)
+>
+> **Scope:** this delegates only `tools.stratevi.com` and anything beneath it.
+> It does not affect `stratevi.com`, `www`, mail, or any existing record. MX,
+> SPF, DKIM and DMARC on the apex are untouched.
+>
+> **Reversible:** deleting these four records revokes the delegation
+> immediately. Nothing on the AWS side can create records outside this
+> subdomain.
+>
+> **Why delegation rather than individual records:** the platform issues and
+> auto-renews its own TLS certificates, which requires it to write short-lived
+> validation records. Delegation means that happens automatically instead of
+> raising a ticket with you every 13 months, and every time we add an app.
+>
+> Happy to walk through it if useful.
+>
+> Thanks,
+> [you]
+
+## Step 1.4 — Questions IT will probably ask
+
+**"Can't we just add a CNAME instead?"** For pointing one hostname at the load
+balancer, yes. But ACM certificate validation and renewal need records written
+into the zone on AWS's schedule, and each new app needs another record. You'd
+be filing tickets indefinitely. Delegation is the one-time version.
+
+**"What's the security exposure?"** Whoever controls the Route 53 zone can
+create hostnames under `tools.stratevi.com` and obtain certificates for them.
+That's it — no ability to touch the parent domain, mail routing, or anything
+outside the subdomain. It's the same trust boundary as giving someone a folder
+on a shared drive.
+
+**"Does this affect email?"** No. Mail routing is determined by MX records on
+`stratevi.com`, which are unchanged. A subdomain delegation cannot influence
+them.
+
+**"What if we want it back?"** Delete the four NS records. Delegation ends
+within the TTL, an hour at most.
+
+**"Who's paying for it?"** The hosted zone is $0.50/month on the AWS account
+you already have.
+
+## Step 1.5 — Verify delegation actually worked
+
+Don't take IT's word for it — check. From any machine:
+
+```bash
+dig NS tools.stratevi.com +short
+```
+
+Success looks like the same four `awsdns` nameservers you sent them. Empty
+output or a different set means it isn't live yet.
+
+Propagation is usually minutes but can take up to the parent zone's TTL. If
+it's been a few hours and you still get nothing, ask IT to confirm the records
+saved — the most common failure is a DNS panel that silently appended the
+domain, producing `tools.stratevi.com.stratevi.com`.
+
+Also confirm the zone resolves as authoritative:
+
+```bash
+dig SOA tools.stratevi.com +short
+```
+
+Once both return sensible answers, Phase 1 is done. **Do not start Phase 2
+until `dig NS` returns the AWS nameservers** — the certificate step will hang
+indefinitely without it.
+
+---
+
+# Phase 2 — Deploy
+
+## Step 2.0 — Prerequisites
+
+### Tooling
+
+```bash
+terraform version   # need >= 1.6, and >= 1.10 if you use the S3 backend below
+aws --version       # v2
+docker --version    # daemon running
+dig -v              # or use nslookup
+```
+
+Install anything missing before you go further.
+
+### AWS credentials
+
+```bash
+aws sts get-caller-identity
+```
+
+Confirm the account ID is the one you intend to deploy into. If your org uses
+SSO, run `aws sso login` first.
+
+### IAM permissions
+
+This is the most common hard blocker, and worth checking before you start
+rather than discovering it halfway through an apply. You need permission to
+create resources in:
+
+`ec2` (VPC, subnets, security groups) · `elasticloadbalancing` · `ecs` · `ecr` ·
+`lambda` · `logs` · `events` · `cloudwatch` · `cognito-idp` · `ssm` ·
+`route53` · `acm` · `budgets` · **`iam`**
+
+`iam:CreateRole` and `iam:AttachRolePolicy` are frequently restricted, and the
+platform stack creates three roles. If you're not an account admin, get this
+confirmed up front — a mid-apply permission failure leaves you with a partial
+stack to clean up.
+
+### Region
+
+Pick one and use it everywhere. `us-east-1` is the default in the tfvars and is
+the cheapest. The ACM certificate must be in the **same region as the ALB**
+(unlike CloudFront, which requires us-east-1), and the Terraform handles that
+automatically as long as you don't mix regions between stacks.
+
+Being in LA is not a reason to use `us-west-2` — the latency difference is
+tens of milliseconds on an app people open a few times a day.
+
+### Unpack
+
+```bash
+mkdir -p ~/shiny-platform && cd ~/shiny-platform
+unzip platform.zip      -d platform
+unzip dashboard.zip     -d dashboard
+unzip dashboard-app.zip            # extracts a dashboard-app/ folder
+ls
+# dashboard  dashboard-app  platform
+```
+
+## Step 2.1 — Optional: remote state
+
+Skip this if you're the only person who will ever run Terraform. Do it if
+anyone else might, or if you care about not losing state with your laptop.
+
+```bash
+aws s3api create-bucket \
+  --bucket stratevi-tf-state-$(aws sts get-caller-identity --query Account --output text) \
+  --region us-east-1
+
+aws s3api put-bucket-versioning \
+  --bucket stratevi-tf-state-<account-id> \
+  --versioning-configuration Status=Enabled
+```
+
+Then uncomment the `backend "s3"` block in `platform/versions.tf` and
+`dashboard/versions.tf`, filling in the bucket name. The `use_lockfile = true`
+line requires **Terraform 1.10 or later**; on older versions, replace it with
+`dynamodb_table = "<a lock table you create>"`.
+
+Do this before the first `apply`. Migrating state afterward works but is an
+extra step you don't need.
+
+## Step 2.2 — Configure the platform stack
+
+```bash
+cd platform
+cp terraform.tfvars.example terraform.tfvars
+```
+
+Edit four values:
+
+```hcl
+region  = "us-east-1"
+project = "shiny"                    # keep this consistent across all stacks
+
+route53_zone_id = "Z0123456789ABC"   # from Step 1.2, no /hostedzone/ prefix
+domain_name     = "tools.stratevi.com"
+
+cognito_domain_prefix = "stratevi-shiny-auth"
+
+budget_alert_emails = ["you@stratevi.com"]
+```
+
+Two constraints worth knowing:
+
+- `cognito_domain_prefix` must be **globally unique across all of AWS**,
+  lowercase alphanumeric and hyphens only, and cannot contain the strings
+  `aws`, `amazon`, or `cognito`. If apply fails here, add a suffix.
+- `project` is how the dashboard stack finds the platform's SSM parameters. If
+  the two don't match, the dashboard apply fails with a parameter-not-found
+  error that doesn't obviously point at the cause.
+
+Leave `oidc_provider` commented out. Get Cognito-native login working first;
+Entra federation is a separate change once the basics are proven.
+
+## Step 2.3 — Apply the platform
+
+```bash
+terraform init
+terraform plan     # skim it; ~40 resources, no deletions
+terraform apply
+```
+
+**Expect this to pause for several minutes** on
+`aws_acm_certificate_validation.wildcard`. That's Terraform waiting for AWS to
+verify the DNS record it just wrote. Normal duration is 2–5 minutes.
+
+If it's still going after 15, kill it and check the delegation:
+
+```bash
+dig NS tools.stratevi.com +short
+```
+
+Empty means Phase 1 didn't finish. Fix that, then re-run `apply` — it's safe to
+resume.
+
+Save the outputs:
+
+```bash
+terraform output
+```
+
+From here you are paying roughly **$20/month** whether or not anything is
+deployed on top. That's the ALB.
+
+## Step 2.4 — Build and test the image locally
+
+Do this before pushing anything. A broken image caught locally costs five
+minutes; caught in ECS it costs an hour of log spelunking.
+
+```bash
+cd ../dashboard-app
+docker build --platform linux/amd64 -t tarpeyo-dashboard .
+```
+
+First build takes 5–10 minutes, mostly installing plotly's dependency tree.
+Subsequent builds hit Docker's layer cache and take seconds unless you change
+the Dockerfile.
+
+`--platform linux/amd64` is **mandatory on an Apple Silicon Mac**. The task
+definition specifies `X86_64`; an arm64 image pushes fine, then fails to start
+with `exec format error`, which is an unhelpful message to debug.
+
+```bash
+docker run --rm -p 3838:3838 tarpeyo-dashboard
+```
+
+Open `http://localhost:3838` and check three things:
+
+1. The Sankey renders and the sliders/filters respond.
+2. Open browser devtools → Network. Within a minute you should see a `HEAD`
+   request to `/?heartbeat=...`. **This is the check that matters most.**
+   Without it, the deployed app will work perfectly and then drop users after
+   20 minutes of a "quiet" session, which is the single most annoying failure
+   mode in this architecture.
+3. No errors in the container's console output.
+
+Stop the container when satisfied.
+
+## Step 2.5 — Apply the dashboard stack
+
+```bash
+cd ../dashboard
+```
+
+Open `terraform.tfvars` and confirm `project = "shiny"` matches the platform.
+Everything else is already set sensibly. Then:
+
+```bash
+terraform init
+terraform apply
+```
+
+This is quick — about 2 minutes. It creates the ECR repository, the Cognito
+client, both target groups, the listener rule, the ECS service at zero tasks,
+and the two Lambdas.
+
+The service starting with an empty ECR repository is expected and fine. It has
+zero desired tasks, so there's nothing to pull yet.
+
+## Step 2.6 — Push the image
+
+```bash
+terraform output docker_push_commands
+```
+
+That prints four commands with your account ID and repository URL filled in:
+ECR login, build, push, and a `force-new-deployment`. Run them from the
+`dashboard-app/` directory:
+
+```bash
+cd ../dashboard-app
+# paste the four commands
+```
+
+The push moves roughly 1.2–1.5 GB, so give it a few minutes on a normal
+connection.
+
+The `force-new-deployment` at the end is a no-op right now (desired count is
+zero), but running it keeps the habit for future updates, where it's the step
+that actually ships your change.
+
+## Step 2.7 — Create your user
+
+```bash
+cd ../platform
+
+aws cognito-idp admin-create-user \
+  --user-pool-id $(terraform output -raw cognito_user_pool_id) \
+  --username you@stratevi.com \
+  --user-attributes Name=email,Value=you@stratevi.com Name=email_verified,Value=true
+```
+
+You'll get a temporary password by email. The pool is invite-only by default,
+which is what you want for anything client-facing.
+
+## Step 2.8 — First login
+
+```bash
+cd ../dashboard && terraform output -raw url
+```
+
+Visit it. The sequence you should see:
+
+1. Redirect to the Cognito hosted login page.
+2. Sign in with the temporary password; you'll be forced to set a new one.
+3. Redirect back, then a **"Starting Treatment Pathway Dashboard"** holding
+   page with a progress bar.
+4. After 30–45 seconds, the page refreshes into your app.
+
+That holding page is the waker Lambda doing its job. Seeing it once is
+confirmation the whole mechanism works.
+
+## Step 2.9 — Verify the sleep cycle
+
+This is the step people skip, and it's the one that determines whether you
+actually get the cost savings. Set aside 45 minutes and don't touch the app.
+
+Open the CloudWatch dashboard named `shiny-dashboard-runtime`. Watch
+`HealthyHostCount`.
+
+**Note:** the default tfvars enable a weekday warm window of 12:00–01:00 UTC
+(roughly 07:00–20:00 US Eastern). Inside that window the app is *supposed* to
+stay up. To test sleeping, either do this outside the window, or temporarily
+set `warm_enabled = false` and re-apply.
+
+What you want to see:
+
+- `HealthyHostCount` at 1 while you're using it
+- `RequestCountPerTarget` showing steady low traffic — that's your heartbeat
+- Roughly 20 minutes after you close the browser, `HealthyHostCount` drops to 0
+- Revisiting the URL shows the holding page again, then the app
+
+Check the sleeper's reasoning:
+
+```bash
+aws logs tail /aws/lambda/shiny-dashboard-sleeper --since 1h
+```
+
+Each run logs one of: `warm`, `already-asleep`, `too-young`, `active`, or
+`slept`. If you see `active` when nobody is using it, something is polling the
+URL — an uptime monitor, a browser tab left open, a bookmark preview.
+
+## Step 2.10 — Invite real users
+
+```bash
+cd ../platform
+
+for EMAIL in colleague@stratevi.com client@example.com; do
+  aws cognito-idp admin-create-user \
+    --user-pool-id $(terraform output -raw cognito_user_pool_id) \
+    --username "$EMAIL" \
+    --user-attributes Name=email,Value="$EMAIL" Name=email_verified,Value=true
+done
+```
+
+Tell them about the cold start before they hit it. "It sleeps when idle, so the
+first load in the morning takes about a minute" prevents the support message.
+
+---
+
+# Operations
+
+## Shipping an app change
+
+```bash
+cd dashboard-app
+# edit app.R
+docker build --platform linux/amd64 -t <ecr-url>:latest .
+docker push <ecr-url>:latest
+aws ecs update-service --cluster shiny-cluster \
+  --service shiny-dashboard --force-new-deployment
+```
+
+No Terraform needed for content changes. Terraform only comes back in when you
+change infrastructure — sizing, schedule, domains.
+
+## Adjusting the sleep schedule
+
+Edit `dashboard/terraform.tfvars`, then `terraform apply`. Relevant knobs:
+`warm_enabled`, `warm_days`, `warm_start_utc`, `warm_end_utc`, `idle_minutes`.
+
+Remember the warm window is in **UTC**, and the US offset shifts by an hour
+twice a year. If exact business-hours alignment matters, adjust it in March and
+November, or just widen the window by an hour and stop thinking about it.
+
+## Checking what it actually cost
+
+After the first full month:
+
+**Billing → Cost Explorer → group by Tag: Project = shiny**
+
+Sanity check: ALB around $16–20, Fargate a few dollars, everything else near
+zero. If Fargate is much higher than expected, the app isn't sleeping — go back
+to Step 2.9.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `apply` hangs on certificate validation | Delegation not live | `dig NS tools.stratevi.com` — if empty, Phase 1 is incomplete |
+| ALB returns 503 | Waker Lambda not registered to its target group | Check `aws_lb_target_group_attachment.waker` applied; re-run `terraform apply` |
+| Task starts then dies repeatedly | Health check failing | `aws logs tail /ecs/shiny/dashboard --since 15m` |
+| `exec format error` in task logs | arm64 image on an x86 task | Rebuild with `--platform linux/amd64` |
+| Cognito redirect loop | Callback URL mismatch | Confirm the app client's callback is `https://<fqdn>/oauth2/idpresponse` |
+| App never sleeps | Heartbeat firing with no users, or warm window active | Check sleeper logs; confirm the warm window is what you think in UTC |
+| Session dies after ~20 min of use | Heartbeat missing from the deployed image | Verify in devtools; rebuild and push |
+| `parameter not found` on dashboard apply | `project` differs between stacks | Make them match, re-apply |
+| Cognito domain apply fails | Prefix already taken globally | Add a suffix and re-apply |
+
+## Teardown
+
+Reverse order — the dashboard's listener rule attaches to the platform's
+listener:
+
+```bash
+cd dashboard && terraform destroy
+cd ../platform && terraform destroy
+```
+
+The ECR repository has `force_delete = false`, so delete images first if you
+want it to go cleanly. The Route 53 hosted zone is a separate resource you
+created by hand; delete it manually, and ask IT to remove the NS records if
+you're done for good.
+
+---
+
+# What comes after
+
+Once the dashboard has run for a week or two without drama, you'll have proven
+the ALB, Cognito, the waker/sleeper cycle, and the deployment loop. The
+microsimulation model is the same motion with three differences: a much larger
+image, a 4 vCPU task, and the three R code changes it actually needs
+(`SHINY_CPU_WORKERS`, `DEBUG_RUNMODEL`, and a cap on `n`).
+
+That one needs the full app directory — `ui.R`, `global.R`,
+`Rcode_Packages.R`, `Rcode_HelperFunctions.R`, `Images/`, `www/` — plus the
+`renv.lock`.

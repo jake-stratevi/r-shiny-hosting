@@ -1,0 +1,24 @@
+region  = "us-east-1"
+project = "shiny"
+
+route53_zone_id = "Z0123456789ABCDEFGHIJ"
+domain_name     = "tools.example.com"
+
+cognito_domain_prefix   = "example-shiny-auth"
+admin_create_users_only = true
+
+alb_idle_timeout = 3600
+
+monthly_budget_usd  = 75
+budget_alert_emails = ["you@example.com"]
+
+# alb_allowed_cidrs = ["203.0.113.0/24"]
+
+# Prefer TF_VAR_oidc_provider over putting the secret in this file.
+# oidc_provider = {
+#   name          = "EntraID"
+#   issuer        = "https://login.microsoftonline.com/<tenant-id>/v2.0"
+#   client_id     = "<client-id>"
+#   client_secret = "<secret>"
+#   scopes        = "openid profile email"
+# }

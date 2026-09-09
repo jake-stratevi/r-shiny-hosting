@@ -1,0 +1,50 @@
+# ---------------------------------------------------------------------------
+# Single source of truth for what appears on the dashboards.tools.stratevi.com
+# portal (see portal/ and docs/adr/0013-lightweight-shiny-portal.md).
+#
+# access_mode:
+#   all_users   any authenticated Hub-pool user sees this tile.
+#   users       only the addresses in allowed_emails see this tile.
+#
+# CURRENT LIMITATION -- read before editing:
+# This file drives the PORTAL's menu only. It does not (yet) drive each app's
+# own enforcement -- dashboard/terraform.tfvars and model/terraform.tfvars
+# still carry their own allowed_emails, independently. The real access
+# decision for each app is still made by that app itself (ADR-0008); this
+# catalog only decides whether a tile is shown. If you change who can see an
+# app, update BOTH this file and that app's terraform.tfvars, or the portal's
+# menu will drift from reality. See ADR-0013's "Consequences" for the planned
+# fix (each app stack reading allowed_emails from here instead of its own
+# tfvars).
+# ---------------------------------------------------------------------------
+
+apps:
+  - key: dashboard
+    label: "Treatment Pathway Dashboard"
+    description: "Sankey diagram of treatment sequences after 2022 Tarpeyo initiation."
+    url: "https://dashboard.tools.stratevi.com"
+    access_mode: users
+    allowed_emails:
+      - jake@stratevi.com
+      # Same person, signed in via the Hub pool's Microsoft365 (Assembled
+      # Intelligence Entra) federation instead of the native Cognito
+      # username/password account -- Cognito hands back a different email
+      # per identity provider. Keep both listed everywhere jake@stratevi.com
+      # is, or sign-in via Microsoft365 gets refused just like anyone else
+      # not on the list.
+      - jake.pistotnik@assembledintelligence.co.uk
+      - nick@stratevi.com
+      - nick.adair@assembledintelligence.co.uk
+      - yi@stratevi.com
+      - yi.pan@assembledintelligence.co.uk
+      - josh@stratevi.com
+      - josh.epstein@assembledintelligence.co.uk
+
+  - key: model
+    label: "Microsimulation Model"
+    description: "Patient-level microsimulation across four treatment passes."
+    url: "https://model.tools.stratevi.com"
+    access_mode: users
+    allowed_emails:
+      - jake@stratevi.com
+      - jake.pistotnik@assembledintelligence.co.uk
