@@ -10,9 +10,11 @@ import {
   type AppPatch,
   type WritableAppStatus,
 } from '../api/types'
+import { Button } from '../components/Button'
 import { EmailTagEditor } from '../components/EmailTagEditor'
 import { ExpiryPicker } from '../components/ExpiryPicker'
-import { InlineError, Panel } from '../components/states'
+import { CheckIcon } from '../components/icons'
+import { InlineError, SectionCard } from '../components/states'
 
 interface Draft {
   label: string
@@ -84,6 +86,12 @@ function validate(draft: Draft): string | null {
   return null
 }
 
+/**
+ * The PATCH form. assembled.work splits this across one card per concern
+ * (Details / Access / Domain / Danger zone), each saving on its own; ours is
+ * a single diffed PATCH, so the cards group the fields and one sticky bar
+ * owns the save.
+ */
 export function AppSettingsForm({
   app,
   onSaved,
@@ -140,27 +148,37 @@ export function AppSettingsForm({
   }
 
   return (
-    <form onSubmit={submit} className="space-y-6">
-      <Panel className="divide-y divide-line-soft">
-        <Field label="Label" hint="Shown on the tile and in this list.">
+    <form onSubmit={submit} className="space-y-5">
+      <SectionCard
+        title="Details"
+        description="What the tile says. Clients read both of these."
+        bodyClassName="divide-y divide-line-soft"
+      >
+        <Field label="Label" hint="Shown on the tile and in the admin list.">
           <input
             type="text"
             value={draft.label}
             onChange={(e) => set('label', e.target.value)}
-            className={`${wideInputClass} max-w-xl`}
+            className={`${inputClass} w-full max-w-xl`}
           />
         </Field>
 
-        <Field label="Description" hint="One or two sentences. Clients read this.">
+        <Field label="Description" hint="One or two sentences.">
           <textarea
             rows={3}
             value={draft.description}
             onChange={(e) => set('description', e.target.value)}
-            className={`${wideInputClass} max-w-xl resize-y leading-relaxed`}
+            className={`${inputClass} w-full max-w-xl resize-y leading-relaxed`}
           />
         </Field>
+      </SectionCard>
 
-        <Field label="Access" hint="Who may open the app. The proxy enforces this on every request.">
+      <SectionCard
+        title="Access"
+        description="Everyone signs in through Cognito first. This narrows it from there — the proxy enforces it on every request."
+        bodyClassName="divide-y divide-line-soft"
+      >
+        <Field label="Who can open it">
           <select
             value={draft.access_mode}
             onChange={(e) => set('access_mode', e.target.value)}
@@ -192,11 +210,22 @@ export function AppSettingsForm({
                 <p className="mt-1.5 text-xs text-amber-800">
                   With no addresses listed, nobody can open this app.
                 </p>
-              ) : null}
+              ) : (
+                <p className="mt-1.5 text-xs text-faint">
+                  {draft.allowed_emails.length}{' '}
+                  {draft.allowed_emails.length === 1 ? 'person' : 'people'} can open it.
+                </p>
+              )}
             </div>
           ) : null}
         </Field>
+      </SectionCard>
 
+      <SectionCard
+        title="Runtime"
+        description="How long a task stays up. Fargate bills per second, so these are the cost dials."
+        bodyClassName="divide-y divide-line-soft"
+      >
         <Field
           label="Idle timeout"
           hint={`Minutes of no traffic before the task is scaled to zero (${IDLE_MINUTES_MIN}–${IDLE_MINUTES_MAX}).`}
@@ -232,7 +261,13 @@ export function AppSettingsForm({
             </span>
           </div>
         </Field>
+      </SectionCard>
 
+      <SectionCard
+        title="Lifecycle"
+        description="When access ends, and whether the app answers at all."
+        bodyClassName="divide-y divide-line-soft"
+      >
         <Field label="Expiry" hint="A date, or a deliberate never. No silent default.">
           <ExpiryPicker value={draft.expires_at} onChange={(next) => set('expires_at', next)} />
           {app.status === 'expired' ? (
@@ -248,8 +283,9 @@ export function AppSettingsForm({
               <button
                 key={value}
                 type="button"
+                aria-pressed={draft.status === value}
                 onClick={() => set('status', value)}
-                className={`rounded-md border px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                className={`rounded-tile border px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
                   draft.status === value
                     ? 'border-accent bg-accent-soft text-accent'
                     : 'border-line bg-surface text-muted hover:bg-canvas'
@@ -260,7 +296,7 @@ export function AppSettingsForm({
             ))}
           </div>
         </Field>
-      </Panel>
+      </SectionCard>
 
       {confirmingDisable ? (
         <div className="rounded-card border border-amber-300 bg-amber-50 px-5 py-4">
@@ -272,57 +308,63 @@ export function AppSettingsForm({
             to zero. Nothing is deleted, and you can re-enable it here at any time.
           </p>
           <div className="mt-3.5 flex gap-2">
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-md bg-amber-700 px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-800 disabled:opacity-60"
-            >
+            <Button type="submit" variant="danger" disabled={saving}>
               {saving ? 'Disabling…' : 'Yes, disable it'}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
+              variant="outline"
               onClick={() => setConfirmingDisable(false)}
-              className="rounded-md border border-line bg-surface px-3.5 py-2 text-sm font-medium text-muted hover:bg-canvas"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
 
       {error ? <InlineError>{error}</InlineError> : null}
 
-      <div className="flex items-center gap-3">
-        <button
-          type="submit"
-          disabled={!dirty || saving}
-          className="rounded-md bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-faint"
-        >
+      {/* Sticky, so the save is reachable from anywhere in a long form. */}
+      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 rounded-t-card bg-canvas/95 px-1 py-4 backdrop-blur">
+        <Button type="submit" disabled={!dirty || saving}>
           {saving ? 'Saving…' : 'Save changes'}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
+          variant="outline"
           disabled={!dirty || saving}
           onClick={() => {
             setDraft(toDraft(app))
             setConfirmingDisable(false)
             setError(null)
           }}
-          className="rounded-md border border-line bg-surface px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-canvas disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
-        </button>
-        {saved && !dirty ? <span className="text-sm text-emerald-700">Saved.</span> : null}
-        {dirty && !saved ? <span className="text-sm text-faint">Unsaved changes</span> : null}
+        </Button>
+        {saved && !dirty ? (
+          <span className="flex items-center gap-1.5 text-sm text-emerald-700">
+            <CheckIcon className="h-4 w-4" />
+            Saved.
+          </span>
+        ) : null}
+        {dirty && !saved ? (
+          <span className="text-sm text-faint">
+            {Object.keys(patch).length}{' '}
+            {Object.keys(patch).length === 1 ? 'unsaved change' : 'unsaved changes'}
+          </span>
+        ) : null}
       </div>
     </form>
   )
 }
 
 const inputClass =
-  'rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent disabled:bg-canvas'
-const wideInputClass = `${inputClass} w-full`
+  'rounded-tile border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent disabled:bg-canvas'
 
+/**
+ * The two-column definition layout: the label and its explanation on the
+ * left, the control on the right, so a form reads as a list of decisions.
+ */
 function Field({
   label,
   hint,
@@ -333,12 +375,12 @@ function Field({
   children: ReactNode
 }) {
   return (
-    <div className="grid gap-x-8 gap-y-2 px-6 py-5 md:grid-cols-[13rem_minmax(0,1fr)]">
+    <div className="grid gap-x-8 gap-y-2 px-5 py-5 md:grid-cols-field">
       <div>
         <div className="text-sm font-medium text-ink">{label}</div>
         {hint ? <p className="mt-1 text-xs leading-relaxed text-faint">{hint}</p> : null}
       </div>
-      <div>{children}</div>
+      <div className="min-w-0">{children}</div>
     </div>
   )
 }

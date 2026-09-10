@@ -8,6 +8,12 @@ interface Style {
   pulse?: boolean
 }
 
+/**
+ * One tint system, no black badges (assembled.work's StatusBadge rule):
+ * emerald = good, amber = in progress or needs a look, red = stopped,
+ * neutral outline = off. The dot reinforces the label; the label always
+ * carries the meaning on its own.
+ */
 const STYLES: Record<LiveState, Style> = {
   awake: {
     label: 'Awake',
@@ -22,13 +28,13 @@ const STYLES: Record<LiveState, Style> = {
   },
   asleep: {
     label: 'Asleep',
-    chip: 'bg-slate-100 text-slate-600 ring-slate-500/20',
+    chip: 'bg-slate-100 text-slate-600 ring-slate-500/15',
     dot: 'bg-slate-400',
   },
   disabled: {
     label: 'Disabled',
-    chip: 'bg-slate-800 text-slate-100 ring-slate-900/30',
-    dot: 'bg-slate-400',
+    chip: 'bg-surface/90 text-muted ring-line',
+    dot: 'bg-faint',
   },
   expired: {
     label: 'Expired',
@@ -51,16 +57,20 @@ const UNKNOWN: Style = {
 export function StatusBadge({
   state,
   className = '',
+  title,
 }: {
   state: LiveState | string
   className?: string
+  /** Native tooltip — used to hang the wake-time hint off a chip. */
+  title?: string
 }) {
   const known = STYLES[state as LiveState]
   const style = known ?? { ...UNKNOWN, label: String(state) }
 
   return (
     <span
-      className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${style.chip} ${className}`}
+      title={title}
+      className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset ${style.chip} ${className}`}
     >
       <span
         aria-hidden="true"

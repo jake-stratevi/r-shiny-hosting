@@ -20,15 +20,17 @@ resource "aws_dynamodb_table_item" "portal_config" {
 
   item = jsonencode({
     host = { S = "__config__" }
+    # Alphabetical -- DynamoDB returns string sets sorted, and any other
+    # order here shows up as a perpetual cosmetic diff on every plan.
     admin_emails = { SS = [
-      "jake@stratevi.com",
       "jake.pistotnik@assembledintelligence.co.uk",
-      "nick@stratevi.com",
-      "nick.adair@assembledintelligence.co.uk",
-      "yi@stratevi.com",
-      "yi.pan@assembledintelligence.co.uk",
-      "josh@stratevi.com",
+      "jake@stratevi.com",
       "josh.epstein@assembledintelligence.co.uk",
+      "josh@stratevi.com",
+      "nick.adair@assembledintelligence.co.uk",
+      "nick@stratevi.com",
+      "yi.pan@assembledintelligence.co.uk",
+      "yi@stratevi.com",
     ] }
   })
 }

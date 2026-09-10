@@ -9,11 +9,11 @@ output "alb_dns_name" {
 
 output "cognito_user_pool_id" {
   description = "Invite users: aws cognito-idp admin-create-user --user-pool-id <id> --username someone@client.com --user-attributes Name=email,Value=... Name=email_verified,Value=true"
-  value       = var.cognito_user_pool_id
+  value       = aws_cognito_user_pool.this.id
 }
 
 output "cognito_hosted_ui" {
-  value = "https://${var.cognito_hosted_ui_domain}.auth.${var.region}.amazoncognito.com"
+  value = "https://${aws_cognito_user_pool_domain.this.domain}.auth.${var.region}.amazoncognito.com"
 }
 
 output "ecs_cluster_name" {

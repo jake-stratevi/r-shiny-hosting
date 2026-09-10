@@ -1,22 +1,32 @@
 import type { ReactNode } from 'react'
 import { ApiError } from '../api/client'
+import { ButtonLink } from './Button'
 
-export function PageHeading({
+/**
+ * Shared page header: one place for the title/subtitle scale and the action
+ * row, so every page opens with the same typographic voice.
+ * (assembled.work PageHeader.)
+ */
+export function PageHeader({
   title,
-  subtitle,
+  description,
+  meta,
   actions,
 }: {
-  title: string
-  subtitle?: ReactNode
+  title: ReactNode
+  description?: ReactNode
+  /** A quieter third line — who you are signed in as, refresh cadence, etc. */
+  meta?: ReactNode
   actions?: ReactNode
 }) {
   return (
-    <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight text-ink">{title}</h1>
-        {subtitle ? <p className="mt-1.5 text-sm text-muted">{subtitle}</p> : null}
+    <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+        {description ? <p className="mt-1 text-sm text-muted">{description}</p> : null}
+        {meta ? <p className="mt-1 text-xs text-faint">{meta}</p> : null}
       </div>
-      {actions ? <div className="flex items-center gap-2">{actions}</div> : null}
+      {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
     </div>
   )
 }
@@ -29,11 +39,42 @@ export function Panel({
   className?: string
 }) {
   return (
-    <div
-      className={`rounded-card border border-line bg-surface shadow-card ${className}`}
-    >
+    <div className={`rounded-card border border-line bg-surface shadow-card ${className}`}>
       {children}
     </div>
+  )
+}
+
+/**
+ * A panel with the quiet header strip assembled.work puts on every block on
+ * the Show page ("App links", "Version history", "At a glance").
+ */
+export function SectionCard({
+  title,
+  description,
+  actions,
+  children,
+  bodyClassName = '',
+}: {
+  title: ReactNode
+  description?: ReactNode
+  actions?: ReactNode
+  children: ReactNode
+  bodyClassName?: string
+}) {
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line-soft px-5 py-3.5">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold text-ink">{title}</h2>
+          {description ? (
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-faint">{description}</p>
+          ) : null}
+        </div>
+        {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+      </div>
+      <div className={bodyClassName}>{children}</div>
+    </Panel>
   )
 }
 
@@ -46,21 +87,40 @@ export function Loading({ label = 'Loading' }: { label?: string }) {
   )
 }
 
+/** The empty state from assembled.work: a calm graphic, a line, a way out. */
 export function EmptyState({
   title,
   children,
+  action,
 }: {
   title: string
   children?: ReactNode
+  action?: ReactNode
 }) {
   return (
     <div className="rounded-card border border-dashed border-line bg-surface/60 px-8 py-14 text-center">
-      <p className="text-sm font-medium text-ink">{title}</p>
+      <svg
+        className="mx-auto mb-5 h-20 w-20 text-accent/25"
+        viewBox="0 0 96 96"
+        fill="none"
+        aria-hidden="true"
+      >
+        <rect x="14" y="22" width="68" height="52" rx="6" stroke="currentColor" strokeWidth="3" />
+        <path d="M14 34h68" stroke="currentColor" strokeWidth="3" />
+        <circle cx="22" cy="28" r="2" fill="currentColor" />
+        <circle cx="30" cy="28" r="2" fill="currentColor" />
+        <path
+          d="M32 60V48M44 60V42M56 60V52M68 60V44"
+          stroke="currentColor"
+          strokeWidth="3"
+          strokeLinecap="round"
+        />
+      </svg>
+      <p className="text-base font-medium text-ink">{title}</p>
       {children ? (
-        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          {children}
-        </div>
+        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">{children}</div>
       ) : null}
+      {action ? <div className="mt-6 flex justify-center">{action}</div> : null}
     </div>
   )
 }
@@ -74,12 +134,9 @@ export function NoAdminAccess() {
         This area is limited to platform administrators. Your sign-in worked
         fine — the account just isn’t on the admin list.
       </p>
-      <a
-        href="/"
-        className="mt-6 inline-flex items-center rounded-md bg-accent px-3.5 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover"
-      >
-        Back to your tools
-      </a>
+      <div className="mt-6 flex justify-center">
+        <ButtonLink href="/">Back to your tools</ButtonLink>
+      </div>
     </div>
   )
 }
@@ -110,11 +167,43 @@ export function ErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-800 transition-colors hover:bg-red-100"
+          className="mt-4 rounded-tile border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-800 transition-colors hover:bg-red-100"
         >
           Try again
         </button>
       ) : null}
+    </div>
+  )
+}
+
+/**
+ * The state-driven notice bar from assembled.work's Show page: one card, tone
+ * carried by colour, an optional action. Only rendered when something is
+ * actually the matter.
+ */
+export function Notice({
+  tone,
+  title,
+  children,
+  action,
+}: {
+  tone: 'info' | 'warning' | 'danger'
+  title: ReactNode
+  children?: ReactNode
+  action?: ReactNode
+}) {
+  const skin =
+    tone === 'danger'
+      ? 'border-red-200 bg-red-50/70 text-red-900'
+      : tone === 'warning'
+        ? 'border-amber-200 bg-amber-50/80 text-amber-900'
+        : 'border-accent-line bg-accent-soft text-ink'
+
+  return (
+    <div className={`rounded-card border px-5 py-4 ${skin}`}>
+      <p className="text-sm font-semibold">{title}</p>
+      {children ? <div className="mt-1 text-sm leading-relaxed opacity-90">{children}</div> : null}
+      {action ? <div className="mt-3">{action}</div> : null}
     </div>
   )
 }

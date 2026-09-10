@@ -1,14 +1,20 @@
 import { api } from '../api/client'
 import type { MenuApp } from '../api/types'
+import { Monogram } from '../components/Monogram'
 import { StatusBadge } from '../components/StatusBadge'
-import { EmptyState, ErrorState, Loading, PageHeading } from '../components/states'
+import { EmptyState, ErrorState, Loading, PageHeader } from '../components/states'
+import { ExternalIcon, PlusIcon } from '../components/icons'
 import { useResource } from '../hooks/useResource'
 import { useVisiblePolling } from '../hooks/useVisiblePolling'
+import { firstNameFromEmail, greeting, liveStateHint, menuPulse } from '../lib/appDisplay'
 import { useMe } from '../lib/meContext'
 
 /**
  * dashboards.tools.stratevi.com. External clients land here, so it stays
- * quiet: a heading, tiles, nothing that looks like a control panel.
+ * quiet: a greeting, a grid of cards, nothing that looks like a control
+ * panel. The layout is assembled.work's dashboard — greeting, one-sentence
+ * pulse, card grid — with their search/filter/sort browse block left off,
+ * because a client with three tiles does not need to filter three tiles.
  */
 export function MenuPage() {
   const me = useMe()
@@ -23,13 +29,10 @@ export function MenuPage() {
 
   return (
     <>
-      <PageHeading
-        title="Your tools"
-        subtitle={
-          apps.length > 0
-            ? 'Sleeping tools take about a minute to start the first time you open them.'
-            : undefined
-        }
+      <PageHeader
+        title={`${greeting()}, ${firstNameFromEmail(me?.email)}`}
+        description={menuPulse(apps.map((a) => a.live_state))}
+        meta={me?.email ? `Signed in as ${me.email}` : undefined}
       />
 
       {apps.length === 0 ? (
@@ -55,6 +58,8 @@ export function MenuPage() {
           {apps.map((app) => (
             <MenuTile key={app.host} app={app} />
           ))}
+          {/* Admins get the shape of P2 without a stub route behind it. */}
+          {me?.is_admin ? <NewAppTile /> : null}
         </ul>
       )}
     </>
@@ -62,27 +67,86 @@ export function MenuPage() {
 }
 
 function MenuTile({ app }: { app: MenuApp }) {
+  const hint = liveStateHint(app.live_state)
+  const label = app.label || app.host
+
   return (
-    <li>
+    // min-w-0: the host is one unbreakable token, and without this the grid
+    // track widens to fit it and the card overflows a phone screen.
+    <li className="min-w-0">
       <a
         href={app.url}
-        className="group flex h-full flex-col rounded-card border border-line bg-surface p-5 shadow-card transition-all hover:-translate-y-px hover:border-accent/40 hover:shadow-card-hover"
+        className="group flex h-full flex-col overflow-hidden rounded-card border border-line bg-surface shadow-card transition-all hover:-translate-y-px hover:border-accent-line hover:shadow-card-hover"
       >
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-[15px] font-semibold leading-snug text-ink group-hover:text-accent">
-            {app.label || app.host}
-          </h2>
-          <StatusBadge state={app.live_state} />
+        {/* The app leads, the way a screenshot would if we had one; the chip
+            rides the art so it never competes with the title for width. */}
+        <div className="relative">
+          <Monogram
+            name={label}
+            seed={app.host}
+            className="aspect-[16/5] w-full border-b border-line-soft"
+          />
+          <StatusBadge
+            state={app.live_state}
+            className="absolute right-2.5 top-2.5 shadow-card"
+            title={hint ?? undefined}
+          />
         </div>
 
-        {app.description ? (
-          <p className="mt-2.5 line-clamp-4 text-sm leading-relaxed text-muted">
-            {app.description}
-          </p>
-        ) : null}
+        <div className="flex flex-1 flex-col p-5">
+          <h2 className="flex items-start gap-1.5 text-[15px] font-semibold leading-snug text-ink group-hover:text-accent">
+            <span className="min-w-0">{label}</span>
+            <ExternalIcon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-faint opacity-0 transition-opacity group-hover:opacity-100" />
+          </h2>
 
-        <p className="mt-auto pt-5 font-mono text-xs text-faint">{app.host}</p>
+          {app.description ? (
+            <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-muted">
+              {app.description}
+            </p>
+          ) : null}
+
+          <div className="mt-auto pt-5">
+            <p className="truncate font-mono text-xs text-faint">{app.host}</p>
+            {hint ? (
+              <p
+                className={`mt-1 text-xs ${
+                  app.live_state === 'awake' ? 'text-emerald-700' : 'text-faint'
+                }`}
+              >
+                {hint}
+              </p>
+            ) : null}
+          </div>
+        </div>
       </a>
+    </li>
+  )
+}
+
+/**
+ * Visible, deliberately inert. It sets the expectation that adding an app is
+ * a portal job without inventing a route that 404s — the wizard is P2 (see
+ * docs/design/portal.md).
+ */
+function NewAppTile() {
+  return (
+    <li>
+      <div
+        aria-disabled="true"
+        title="The app-creation wizard arrives in P2"
+        className="flex h-full min-h-[13rem] cursor-not-allowed flex-col items-center justify-center gap-2 rounded-card border border-dashed border-line bg-surface/50 p-5 text-center"
+      >
+        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas text-faint">
+          <PlusIcon className="h-4 w-4" />
+        </span>
+        <p className="text-sm font-medium text-muted">New app</p>
+        <p className="max-w-[16rem] text-xs leading-relaxed text-faint">
+          Upload a Shiny app and get a private, protected link.
+        </p>
+        <span className="mt-1 rounded-full bg-canvas px-2 py-0.5 text-[11px] font-medium text-faint ring-1 ring-inset ring-line">
+          Coming in P2
+        </span>
+      </div>
     </li>
   )
 }

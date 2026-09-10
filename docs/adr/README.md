@@ -18,7 +18,8 @@ changes gets a new ADR that supersedes the old one, rather than an edit.
 | [0011](0011-fargate-cpu-detection.md) | Worker count from environment, not `detectCores()` | Accepted |
 | [0012](0012-terraform-scope.md) | Terraform for the platform, SDK for dynamic apps | Accepted (implemented by ADR-0014) |
 | [0013](0013-lightweight-shiny-portal.md) | A lightweight Lambda portal at dashboards.tools.stratevi.com | Accepted, interim (retired when ADR-0014 ships) |
-| [0014](0014-standalone-control-plane.md) | Standalone Stratevi control plane: proxy + portal as one service | Accepted, not yet built |
+| [0014](0014-standalone-control-plane.md) | Standalone Stratevi control plane: proxy + portal as one service | Accepted — proxy live, portal P1 live |
+| [0015](0015-dedicated-user-pool.md) | Dedicated user pool for the platform (supersedes 0007) | Accepted, being built |
 
 **Accepted** means built and deployed. **Proposed** means decided but not yet
 implemented — see [ROADMAP.md](../ROADMAP.md) for sequencing.

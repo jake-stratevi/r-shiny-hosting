@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api } from '../api/client'
 import type { AuditEvent } from '../api/types'
-import { EmptyState, ErrorState, Loading, Panel } from '../components/states'
+import { Button } from '../components/Button'
+import { EmptyState, ErrorState, Loading, SectionCard } from '../components/states'
 import { formatDateTime, relativeTime } from '../lib/time'
 
 const PAGE_SIZE = 50
@@ -15,6 +16,8 @@ function eventClass(event: string): string {
       return 'bg-red-50 text-red-700 ring-red-600/20'
     case 'wake':
       return 'bg-amber-50 text-amber-800 ring-amber-600/25'
+    case 'sleep':
+      return 'bg-slate-100 text-slate-600 ring-slate-500/15'
     case 'config_change':
       return 'bg-accent-soft text-accent ring-accent/25'
     default:
@@ -69,10 +72,18 @@ export function AuditLog({ host }: { host: string }) {
 
   return (
     <div className="space-y-4">
-      <Panel className="overflow-hidden">
+      <SectionCard
+        title="Audit log"
+        description="Newest first. Written by the proxy on every access decision, wake and config change."
+        actions={
+          <span className="text-xs text-faint">
+            {events.length} {events.length === 1 ? 'event' : 'events'} loaded
+          </span>
+        }
+      >
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[44rem] border-collapse">
-            <thead className="border-b border-line bg-canvas/60">
+          <table className="w-full min-w-[40rem] border-collapse">
+            <thead className="border-b border-line-soft bg-canvas/60">
               <tr>
                 <th className={TH}>Event</th>
                 <th className={TH}>Who</th>
@@ -105,24 +116,18 @@ export function AuditLog({ host }: { host: string }) {
             </tbody>
           </table>
         </div>
-      </Panel>
+      </SectionCard>
 
       {error ? <ErrorState error={error} onRetry={() => void load(cursor)} /> : null}
 
       <div className="flex items-center gap-3">
         {cursor ? (
-          <button
-            type="button"
-            disabled={loadingMore}
-            onClick={() => void load(cursor)}
-            className="rounded-md border border-line bg-surface px-4 py-2 text-sm font-medium text-muted transition-colors hover:bg-canvas disabled:opacity-60"
-          >
+          <Button variant="outline" disabled={loadingMore} onClick={() => void load(cursor)}>
             {loadingMore ? 'Loading…' : 'Load more'}
-          </button>
+          </Button>
         ) : (
           <span className="text-xs text-faint">End of the log.</span>
         )}
-        <span className="text-xs text-faint">{events.length} events loaded</span>
       </div>
     </div>
   )

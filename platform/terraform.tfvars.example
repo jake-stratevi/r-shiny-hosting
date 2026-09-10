@@ -4,14 +4,20 @@ project = "shiny"
 route53_zone_id = "Z0123456789ABCDEFGHIJ"
 domain_name     = "tools.example.com"
 
-# The EXISTING Assembled Hub pool -- we do not create one.
-# See docs/adr/0007-reuse-hub-cognito-pool.md.
+# This stack CREATES its own user pool (ADR-0015, superseding ADR-0007), so
+# there is no pool id to supply -- only the hosted-UI domain prefix. It must
+# be globally unique across all AWS accounts, lowercase, and must not contain
+# "aws", "amazon" or "cognito". Check before you apply:
 #
-#   aws cognito-idp describe-user-pool --user-pool-id us-east-1_6vtAiYEpv --query "UserPool.Domain" --output text
-#   aws cognito-idp list-identity-providers --user-pool-id us-east-1_6vtAiYEpv --query "Providers[].ProviderName" --output table
-cognito_user_pool_id     = "us-east-1_6vtAiYEpv"
-cognito_hosted_ui_domain = "REPLACE-ME"   # prefix only, from the first command
-cognito_staff_idp_name   = "Microsoft365" # confirm with the second
+#   aws cognito-idp describe-user-pool-domain --domain stratevi-shinyplatform
+cognito_domain_prefix = "REPLACE-ME"
+
+# Leave unset. "COGNITO" (the default) means the pool's own native directory
+# and no federation, which is what a fresh pool has. Set it to an identity
+# provider's name only after federating one INTO this pool:
+#
+#   aws cognito-idp list-identity-providers --user-pool-id <id> --query "Providers[].ProviderName" --output table
+# cognito_staff_idp_name = "Microsoft365"
 
 alb_idle_timeout = 3600
 

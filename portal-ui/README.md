@@ -14,6 +14,8 @@ Stack: Vite 5 + React 18 + TypeScript + Tailwind 3. No server-side anything.
 - Branding: Stratevi. Plain and professional, matching the proxy's own
   operational pages (`proxy-app/proxy_app/page.html`) — **not** Assembled
   Intelligence.
+- UX patterns (not visuals) are ported from assembled.work's app portal: see
+  "Design language" below for what was taken and what was left.
 
 ## Commands
 
@@ -60,8 +62,8 @@ branch and neither the mock transport nor the fixtures reach `dist/`.
 dist/
   index.html                     entry; also the SPA fallback for every
                                  non-API path on a portal host
-  assets/index-<hash>.js         ~197 kB (64 kB gzipped)
-  assets/index-<hash>.css        ~19 kB (4.4 kB gzipped)
+  assets/index-<hash>.js         ~219 kB (69 kB gzipped)
+  assets/index-<hash>.css        ~24 kB (5.3 kB gzipped)
 ```
 
 Filenames are content-hashed; only `index.html` has a stable name, and it
@@ -96,23 +98,75 @@ src/
     client.test.ts
   components/
     Layout.tsx        header, nav (Admin hidden for non-admins), footer
+    Button.tsx        primary / outline / ghost / danger, as button or link
     StatusBadge.tsx   awake/starting/asleep/disabled/expired — one place
+    Monogram.tsx      deterministic two-letter card art  (+ test)
+    StatTile.tsx      a metric that is a door: click it, the list filters
+    Tabs.tsx          underlined tab strip with real tablist ARIA
+    icons.tsx         ~16 hand-drawn 24-grid glyphs; no icon dependency
     EmailTagEditor.tsx  allowed_emails editor  (+ test)
     ExpiryPicker.tsx    expires_at with a never toggle  (+ test)
-    states.tsx        Loading / Empty / Error / NoAdminAccess / Panel
+    states.tsx        PageHeader / SectionCard / Panel / Notice /
+                      Loading / Empty / Error / NoAdminAccess
   hooks/
     useResource.ts       load once, reload on demand, abort on unmount
     useVisiblePolling.ts 15s polling that stops when the tab is hidden
+    useAppCollection.ts  admin browse block: search, filter, sort,
+                         remembered card/table view  (+ test)
   lib/
     time.ts           epoch <-> local date, relative time
+    appDisplay.ts     the short human phrases the cards are made of:
+                      access summary, expiry tense, wake hint, greeting,
+                      attention flags  (+ test)
     meContext.ts
   pages/
-    MenuPage.tsx           /            tiles
-    AdminAppsPage.tsx      /admin       table
-    AdminAppDetailPage.tsx /admin/apps/:host  facts + tabs
-    AppSettingsForm.tsx    the PATCH form
+    MenuPage.tsx           /            card grid  (+ test)
+    AdminAppsPage.tsx      /admin       stats + browse block + table/cards
+                                        (+ test)
+    AdminAppDetailPage.tsx /admin/apps/:host  header, tabs, glance rail
+    AppSettingsForm.tsx    the PATCH form, in sections
     AuditLog.tsx           cursor-paginated event list
+  test/
+    setup.ts
+    render.tsx        renderPage(): a page under router + MeContext
 ```
+
+## Design language
+
+Light, one accent (`#3b6ce4`, the same blue the proxy's own pages use), a
+system font stack, 12 px card radius, 8 px control radius. Everything is
+bundled: **no webfont, no icon package, no component library** — the CSP the
+proxy will eventually serve is unknown, so nothing in the page may reach out
+to a CDN.
+
+Colour carries exactly one meaning. Emerald / amber / red are the status
+language (awake, starting-or-attention, expired). Card art therefore uses
+cool tints only (slate, sky, indigo, violet, cyan, zinc) — a decorative tile
+must never be mistakable for a status, and there is a test asserting it.
+
+Ported from assembled.work, in patterns rather than pixels:
+
+| Their thing | Ours |
+|---|---|
+| Dashboard greeting + one-sentence "pulse" | Menu page header, counting awake tools |
+| `PreviewCard` art + overlaid status chip | `Monogram` band + `StatusBadge` (we have no screenshots to show) |
+| `StatTile` — "every number is a door" | Admin stats; clicking one filters the list |
+| `useAppCollection` browse block | Admin search / filter / sort / remembered view |
+| `Show` header: face, name, chip, meta line, Open + Copy | Detail page header |
+| `Show` tabs + "At a glance" rail | Detail page tabs + rail |
+| Two-column definition layout in settings | `Field` in `AppSettingsForm` |
+| `EmptyState` with a calm graphic and a way out | `EmptyState` |
+
+Deliberately **not** ported: their palette, logos and dark mode (the portal is
+light-only and Stratevi-branded); teams / organizations / invitations (no
+second org, and the reserved access modes stay greyed out); releases, version
+history, rollback and the upload drop zone (P2 — see `docs/design/portal.md`);
+the onboarding tour; the browse block on the *menu* page, because a client
+with three tiles does not need to filter three tiles.
+
+The "+ New app" affordance is present for admins and deliberately inert
+(disabled, tooltipped "coming in P2") on both the menu and the admin list. It
+sets the expectation without inventing a route that 404s.
 
 ## Behaviour worth knowing
 
@@ -131,6 +185,11 @@ src/
 - **PATCH is a diff**: only fields the admin actually changed are sent, which
   keeps the audit event's `path` (the changed field names) honest.
 - **Disabling asks first.** Nothing else does.
+- **The wake cost is stated, not hidden.** A sleeping tile says "Starts in
+  ~30–60s when opened", because a scale-to-zero app that looks instant and
+  then isn't reads as broken.
+- **The card/table choice sticks** in `localStorage` (`portalAdminView`), and
+  falls back to the table if storage throws.
 
 ## Contract notes for the backend
 

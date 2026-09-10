@@ -29,16 +29,18 @@ is half-done, and what has never been tested.
 | SSM exports | Parameters under `/shiny/platform/` |
 | Budget | `shiny-monthly`, $75, alerts to jake@stratevi.com |
 
-**Cognito split resolved (ADR-0007). Complete.**
-The pool this stack originally created (`us-east-1_AZmmbFBy0`) has been deleted.
-Auth runs on the Assembled Hub pool `us-east-1_6vtAiYEpv`, which is already
-federated to Entra as `Microsoft365` and holds native accounts for external
-partners. Verified 2026-09-09: `list-user-pools` shows only the Hub pool (plus
-the unrelated `assembled-platform-dev-user-pool`), and the portal's sign-in
-redirect goes to the Hub pool's hosted UI. Because Cognito hands back a
-different email per identity provider, the same person appears twice in
-allowlists (`@stratevi.com` native + `@assembledintelligence.co.uk` federated)
-— keep both listed everywhere or the Microsoft365 sign-in path gets refused.
+**Auth: dedicated user pool (ADR-0015, supersedes ADR-0007). Live 2026-09-10.**
+The platform owns pool `us-east-1_LI3CZpwAF` (`shiny-platform`): invite-only,
+email sign-in, managed login v2, hosted UI `stratevi-shinyplatform`. The four
+staff were seeded as users (invite emails with 7-day temp passwords sent on
+apply). The proxy's shared client lives in this pool; the login-page branding
+association is applied (see GOTCHAS — every new client needs one). No Entra
+federation yet — native passwords; federation is one optional later step.
+**Sequencing trap:** the ADR-0013 Lambda portal stack and the un-migrated
+model stack were last applied against the old Hub pool and still work — do
+NOT re-apply either; retire/migrate them instead (see platform/ssm.tf's
+banner). Their leftover clients in the Hub pool get deleted by hand at
+retirement.
 
 **Dashboard stack. Deployed, in use — and MIGRATED TO THE PROXY (2026-09-09,
 `proxied = true`).** The full lifecycle was verified live on a rehearsal host
@@ -71,9 +73,19 @@ image is pushed, and both DynamoDB tables it depends on exist:
 **dashboard is cut over to it** (see the dashboard entry above); model
 follows once its image exists. See [RUNBOOK.md](../RUNBOOK.md#proxy-operations)
 for the migration checklist and [ADR-0014](adr/0014-standalone-control-plane.md)
-for why it exists. Gotcha that bit once already: any NEW client in the Hub
-pool needs a managed-login branding association or its login page refuses to
-render — see GOTCHAS.md and the comment in proxy/cognito.tf.
+for why it exists.
+
+**Portal P1. Live at https://shinyplatform.tools.stratevi.com (2026-09-10;
+renamed from proxy.tools same day).** React SPA served by the proxy service:
+entitlement-filtered app menu (assembled.work-style card workspace, Stratevi
+branding), admin area (app list with live state, per-app settings editing —
+audited — and the audit viewer). Admins: the `__config__` row in
+shiny-proxy-apps, Terraform-owned (proxy/portal.tf). Idle policy per Jake:
+dashboards 20 min, models 10 min. The ADR-0013 Lambda portal still serves
+dashboards.tools.stratevi.com until Jake blesses the new UI; switching that
+hostname (and retiring portal/ + catalog.yaml) is the next small step. P2
+(creation wizard + provisioning) and P2.5 (user management against the new
+pool) are specced in docs/design/portal.md.
 
 ## Broken right now
 

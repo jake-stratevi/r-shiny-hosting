@@ -1,6 +1,6 @@
 # ADR-0007: Reuse the Assembled Hub Cognito pool
 
-**Status:** Accepted — implemented September 2026 (old pool `us-east-1_AZmmbFBy0` deleted; all auth on `us-east-1_6vtAiYEpv`)
+**Status:** Superseded by [ADR-0015](0015-dedicated-user-pool.md) (2026-09-10) — was: Accepted, implemented September 2026 (old pool `us-east-1_AZmmbFBy0` deleted; all auth on `us-east-1_6vtAiYEpv`)
 **Date:** 2026-09-08
 
 ## Context
