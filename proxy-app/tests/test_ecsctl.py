@@ -208,3 +208,94 @@ async def test_an_active_service_reports_its_counts():
     assert await backend.describe_service("shiny-model") == ServiceState(
         exists=True, desired=1, running=1, pending=0
     )
+
+
+# --- cached service state (the portal's status badges) ---------------------
+
+
+class CountingBackend(FakeBackend):
+    def __init__(self, states=None) -> None:
+        super().__init__()
+        self.states = states or {}
+        self.describes: list[str] = []
+        self.broken: set[str] = set()
+
+    async def describe_service(self, service: str) -> ServiceState:
+        self.describes.append(service)
+        if service in self.broken:
+            raise RuntimeError("ecs is unhappy")
+        return self.states.get(service, ServiceState(exists=True, desired=0))
+
+
+@pytest.mark.asyncio
+async def test_a_described_state_is_cached_for_the_state_ttl():
+    backend = CountingBackend()
+    clock = Clock()
+    tasks = ecsctl.Controller(backend, state_ttl=5.0, clock=clock)
+
+    for _ in range(10):
+        await tasks.cached_state("shiny-model")
+    assert backend.describes == ["shiny-model"]
+
+    clock.t += 6
+    await tasks.cached_state("shiny-model")
+    assert len(backend.describes) == 2
+
+
+@pytest.mark.asyncio
+async def test_the_sleeper_s_state_is_deliberately_not_the_cached_one():
+    """It is about to scale a service to zero on the strength of the answer."""
+    backend = CountingBackend()
+    tasks = ecsctl.Controller(backend, clock=Clock())
+    await tasks.state("shiny-model")
+    await tasks.state("shiny-model")
+    assert len(backend.describes) == 2
+
+
+@pytest.mark.asyncio
+async def test_states_batches_a_page_and_deduplicates_it():
+    backend = CountingBackend(
+        {
+            "shiny-model": ServiceState(exists=True, desired=1, running=1),
+            "shiny-dashboard": ServiceState(exists=True, desired=1, running=0),
+        }
+    )
+    tasks = ecsctl.Controller(backend, clock=Clock())
+
+    found = await tasks.states(
+        ["shiny-model", "shiny-dashboard", "shiny-model", ""]
+    )
+
+    assert set(found) == {"shiny-model", "shiny-dashboard"}
+    assert found["shiny-model"].running == 1
+    assert sorted(backend.describes) == ["shiny-dashboard", "shiny-model"]
+
+
+@pytest.mark.asyncio
+async def test_a_service_that_cannot_be_described_degrades_to_an_empty_state():
+    """A portal page that 500s because one ECS call timed out is worse than
+    a badge that reads "asleep"."""
+    backend = CountingBackend()
+    backend.broken = {"shiny-broken"}
+    tasks = ecsctl.Controller(backend, clock=Clock())
+
+    found = await tasks.states(["shiny-broken", "shiny-model"])
+
+    assert found["shiny-broken"] == ServiceState()
+    assert found["shiny-model"].exists is True
+
+
+@pytest.mark.asyncio
+async def test_waking_and_forgetting_both_drop_the_cached_state():
+    """A just-woken app showing "asleep" for five seconds is a bug report."""
+    backend = CountingBackend()
+    tasks = ecsctl.Controller(backend, clock=Clock())
+
+    await tasks.cached_state("shiny-model")
+    assert await tasks.wake("shiny-model") is True
+    await tasks.cached_state("shiny-model")
+    assert backend.describes.count("shiny-model") == 3  # cached, wake, re-read
+
+    tasks.forget("shiny-model")
+    await tasks.cached_state("shiny-model")
+    assert backend.describes.count("shiny-model") == 4

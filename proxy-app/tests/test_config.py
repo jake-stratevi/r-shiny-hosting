@@ -65,6 +65,44 @@ def test_whitespace_around_values_is_ignored():
     assert cfg.cluster == "shiny-cluster"
 
 
+# --- the portal (ADR-0014's second half) -----------------------------------
+
+
+def test_the_portal_is_off_unless_portal_hosts_names_something():
+    """With no portal hosts this service is exactly the proxy it was before."""
+    cfg = config.from_env(COMPLETE)
+    assert cfg.portal_hosts == ()
+    assert cfg.portal_enabled() is False
+    assert cfg.portal_dist == config.DEFAULT_PORTAL_DIST
+
+
+def test_portal_hosts_is_split_normalized_and_deduplicated():
+    cfg = config.from_env(
+        {
+            **COMPLETE,
+            "PORTAL_HOSTS": " Dashboards.Tools.Stratevi.com , proxy.tools.stratevi.com:443 ,,"
+            "dashboards.tools.stratevi.com ",
+        }
+    )
+    assert cfg.portal_hosts == (
+        "dashboards.tools.stratevi.com",
+        "proxy.tools.stratevi.com",
+    )
+    assert cfg.portal_enabled() is True
+
+
+@pytest.mark.parametrize("raw", ["", "   ", ",", " , , "])
+def test_an_empty_portal_hosts_is_no_portal_not_a_startup_failure(raw):
+    cfg = config.from_env({**COMPLETE, "PORTAL_HOSTS": raw})
+    assert cfg.portal_hosts == ()
+    assert cfg.portal_enabled() is False
+
+
+def test_portal_dist_can_be_pointed_somewhere_else():
+    cfg = config.from_env({**COMPLETE, "PORTAL_DIST": "  /srv/bundle  "})
+    assert cfg.portal_dist == "/srv/bundle"
+
+
 # --- logging ---------------------------------------------------------------
 
 

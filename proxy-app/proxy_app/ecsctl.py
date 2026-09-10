@@ -14,12 +14,18 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 #: How long a discovered task IP is trusted. Long enough that a page load
 #: costs one DescribeTasks, short enough that a replaced task is picked up
 #: before a user notices.
 DEFAULT_TTL = 10.0
+
+#: How long a described service state is trusted by :meth:`Controller.states`.
+#: Shorter than the IP cache: it drives the portal's live status badges, which
+#: a person watches during a 30-60s cold start and expects to move. The
+#: sleeper does NOT use it -- see :meth:`Controller.state`.
+STATE_TTL = 5.0
 
 #: A "no task yet" answer is cached far more briefly: during a cold start the
 #: whole point is to notice the moment an IP appears.
@@ -59,13 +65,16 @@ class Controller:
         ttl: float = DEFAULT_TTL,
         *,
         miss_ttl: float = MISS_TTL,
+        state_ttl: float = STATE_TTL,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._backend = backend
         self._ttl = ttl if ttl > 0 else DEFAULT_TTL
         self._miss_ttl = miss_ttl if miss_ttl > 0 else MISS_TTL
+        self._state_ttl = state_ttl if state_ttl > 0 else STATE_TTL
         self._clock = clock
         self._cache: dict[str, tuple[str, float]] = {}
+        self._states: dict[str, tuple[ServiceState, float]] = {}
 
     async def task_ip(self, service: str) -> str:
         """The private address of a running task, or "" when there is none.
@@ -91,6 +100,42 @@ class Controller:
         seconds helps nobody.
         """
         self._cache.pop(service, None)
+        self._states.pop(service, None)
+
+    async def cached_state(self, service: str) -> ServiceState:
+        """A described service state, cached for :data:`STATE_TTL`.
+
+        For the portal's status badges, which are read once per app per page
+        refresh by however many admins have the page open. The sleeper uses
+        the uncached :meth:`state` instead -- it is about to scale something
+        to zero on the strength of the answer.
+        """
+        cached = self._states.get(service)
+        if cached is not None and self._clock() - cached[1] < self._state_ttl:
+            return cached[0]
+
+        state = await self._backend.describe_service(service)
+        self._states[service] = (state, self._clock())
+        return state
+
+    async def states(self, services: Iterable[str]) -> dict[str, ServiceState]:
+        """Cached states for several services at once, concurrently.
+
+        Deduplicated, so two rows pointing at one service cost one call, and
+        cache hits cost none. A service that cannot be described degrades to
+        an empty :class:`ServiceState` rather than failing the whole listing:
+        this feeds a status badge, and a portal page that 500s because one
+        ECS call timed out is worse than a badge that reads "asleep".
+        """
+        wanted = list(dict.fromkeys(s for s in services if s))
+        results = await asyncio.gather(
+            *(self.cached_state(service) for service in wanted),
+            return_exceptions=True,
+        )
+        return {
+            service: (result if isinstance(result, ServiceState) else ServiceState())
+            for service, result in zip(wanted, results)
+        }
 
     async def wake(self, service: str) -> bool:
         """Set desired count to 1 if it is 0; report whether that changed anything.
@@ -103,6 +148,9 @@ class Controller:
         if not state.exists or state.desired > 0:
             return False
         await self._backend.set_desired_count(service, 1)
+        # The cached state now says desired=0, which would show a just-woken
+        # app as "asleep" on the portal for the next few seconds.
+        self._states.pop(service, None)
         return True
 
     async def sleep(self, service: str) -> None:
@@ -111,7 +159,12 @@ class Controller:
         self.forget(service)
 
     async def state(self, service: str) -> ServiceState:
-        """An uncached read, used by the sleeper loop."""
+        """An uncached read, used by the sleeper loop.
+
+        Deliberately not :meth:`cached_state`: the sleeper is about to scale
+        a service to zero on the strength of this answer, and a five-second-
+        old one could be from before a user's request woke it.
+        """
         return await self._backend.describe_service(service)
 
 

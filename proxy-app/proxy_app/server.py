@@ -21,7 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 import aiohttp
 from aiohttp import WSMsgType, web
@@ -106,6 +106,12 @@ class RecorderLike(Protocol):
     def record(self, event: Event) -> None: ...
 
 
+class PortalLike(Protocol):
+    """The portal, which answers everything on a portal hostname."""
+
+    async def handle(self, request: web.Request) -> web.StreamResponse: ...
+
+
 # --- "is anything listening yet" -------------------------------------------
 
 
@@ -183,6 +189,8 @@ class Proxy:
         log: logging.Logger | None = None,
         clock: Callable[[], float] = time.time,
         prober: Prober | None = None,
+        portal: PortalLike | None = None,
+        portal_hosts: Iterable[str] = (),
     ) -> None:
         self._apps = apps
         self._tasks = tasks
@@ -193,6 +201,14 @@ class Proxy:
         self._log = log or logging.getLogger("proxy.server")
         self._clock = clock
         self._prober = prober or Prober()
+        self._portal = portal
+        # Normalized the same way an incoming Host header is, so the
+        # comparison in `handle` is a set membership test and not a parse.
+        self._portal_hosts = frozenset(
+            normalized
+            for normalized in (registry.normalize_host(h) for h in portal_hosts)
+            if normalized
+        )
         # Strong refs to in-flight awake_since persists, same reason as
         # activity.Tracker's _pending: asyncio only holds weak refs to tasks,
         # and a garbage-collected one is a silently dropped write.
@@ -205,6 +221,12 @@ class Proxy:
             return await self._reserved(request)
 
         host = registry.normalize_host(request.host)
+
+        # A portal hostname is answered by the control plane, not proxied to
+        # an app -- and is looked up BEFORE the apps table, so a portal host
+        # needs no row and a row could not shadow it either way.
+        if self._portal is not None and host in self._portal_hosts:
+            return await self._portal.handle(request)
 
         try:
             app = await self._apps.app(host)
@@ -660,6 +682,7 @@ def create_app(proxy: Proxy, *, client_max_size: int = 1024**3) -> web.Applicati
 
 
 __all__ = [
+    "PortalLike",
     "Prober",
     "Proxy",
     "RESERVED_PREFIX",

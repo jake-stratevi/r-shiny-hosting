@@ -12,6 +12,14 @@ Env (exactly this, nothing else):
     AUDIT_TABLE   required -- shiny-proxy-audit.
     PORT          optional -- default 8080; the ALB target group points here.
     LOG_LEVEL     optional -- default info.
+    PORTAL_HOSTS  optional -- comma-separated hostnames served by the portal
+                  (docs/design/portal-api.md) instead of being proxied to an
+                  app. Empty (the default) means the portal is off entirely
+                  and this service is exactly the proxy it was before.
+    PORTAL_DIST   optional -- default ./portal-dist; the directory holding the
+                  built React bundle. A missing directory is NOT an error:
+                  the API still answers and `/` serves a placeholder, so the
+                  backend is deployable before portal-ui/ exists.
 
 Anything required and missing is a startup failure, not a degraded mode: a
 proxy that cannot read the apps table would 404 every app it fronts, which is
@@ -24,12 +32,19 @@ import json
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Mapping
 
+from .registry import normalize_host
+
 DEFAULT_PORT = 8080
 DEFAULT_LOG_LEVEL = "info"
+
+#: Where the built React bundle lives inside the image. The Dockerfile creates
+#: it empty so the image builds before portal-ui/ exists; the CI/build step
+#: copies portal-ui/dist over it.
+DEFAULT_PORTAL_DIST = "./portal-dist"
 
 
 class ConfigError(RuntimeError):
@@ -46,6 +61,29 @@ class Config:
     region: str = ""
     port: int = DEFAULT_PORT
     log_level: str = DEFAULT_LOG_LEVEL
+    #: Hostnames the portal answers on, normalized the same way a Host header
+    #: is. Empty means no portal.
+    portal_hosts: tuple[str, ...] = field(default_factory=tuple)
+    portal_dist: str = DEFAULT_PORTAL_DIST
+
+    def portal_enabled(self) -> bool:
+        return bool(self.portal_hosts)
+
+
+def parse_portal_hosts(raw: str) -> tuple[str, ...]:
+    """Split PORTAL_HOSTS and normalize each entry.
+
+    Normalized through the same function the request path uses, so
+    "Dashboards.Tools.Stratevi.com" in Terraform still matches the Host header
+    that arrives. Duplicates collapse; order is preserved for legibility in
+    the startup log.
+    """
+    seen: list[str] = []
+    for chunk in (raw or "").split(","):
+        host = normalize_host(chunk)
+        if host and host not in seen:
+            seen.append(host)
+    return tuple(seen)
 
 
 def from_env(env: Mapping[str, str] | None = None) -> Config:
@@ -57,6 +95,8 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
     apps_table = (env.get("APPS_TABLE") or "").strip()
     audit_table = (env.get("AUDIT_TABLE") or "").strip()
     log_level = (env.get("LOG_LEVEL") or "").strip().lower() or DEFAULT_LOG_LEVEL
+    portal_hosts = parse_portal_hosts(env.get("PORTAL_HOSTS") or "")
+    portal_dist = (env.get("PORTAL_DIST") or "").strip() or DEFAULT_PORTAL_DIST
 
     raw_port = (env.get("PORT") or "").strip() or str(DEFAULT_PORT)
     try:
@@ -85,6 +125,8 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         region=region,
         port=port,
         log_level=log_level,
+        portal_hosts=portal_hosts,
+        portal_dist=portal_dist,
     )
 
 

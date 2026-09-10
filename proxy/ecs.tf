@@ -78,9 +78,12 @@ resource "aws_ecs_task_definition" "this" {
       protocol      = "tcp"
     }]
 
-    # Config contract per docs/design/proxy.md. Everything the Go service
-    # needs to run comes from here -- no per-app config, the proxy reads app
-    # rows out of APPS_TABLE at request time.
+    # Config contract per docs/design/proxy.md (+ portal additions per
+    # docs/design/portal-api.md). Everything the service needs to run comes
+    # from here -- no per-app config, the proxy reads app rows out of
+    # APPS_TABLE at request time. PORTAL_HOSTS are answered by the portal UI
+    # and API instead of being proxied to an app; the menu host only actually
+    # arrives here once the ADR-0013 Lambda portal's rule 50 is retired.
     environment = [
       { name = "AWS_REGION", value = var.region },
       { name = "ECS_CLUSTER", value = data.aws_ssm_parameter.ecs_cluster_name.value },
@@ -88,6 +91,7 @@ resource "aws_ecs_task_definition" "this" {
       { name = "AUDIT_TABLE", value = aws_dynamodb_table.audit.name },
       { name = "PORT", value = tostring(var.container_port) },
       { name = "LOG_LEVEL", value = var.log_level },
+      { name = "PORTAL_HOSTS", value = join(",", [local.proxy_fqdn, "${var.portal_menu_subdomain}.${data.aws_ssm_parameter.domain_name.value}"]) },
     ]
 
     logConfiguration = {

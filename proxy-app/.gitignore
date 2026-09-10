@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+
+# Built React bundle copied from ../portal-ui/dist at image-build time.
+# Keep the directory (.gitkeep), never its contents.
+portal-dist/*
+!portal-dist/.gitkeep

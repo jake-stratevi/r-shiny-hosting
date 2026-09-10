@@ -85,6 +85,12 @@ def app_from_entry(entry: dict[str, Any], options: Options = Options()) -> App:
     app = App.create(
         host=host,
         app_key=key,
+        # The portal's menu reads these off the row rather than off
+        # catalog.yaml (ADR-0014 retires the catalog), so a migration has to
+        # carry them across or every tile loses its name the day the Lambda
+        # portal is switched off.
+        label=str(entry.get("label") or "").strip(),
+        description=str(entry.get("description") or "").strip(),
         ecs_service=str(entry.get("ecs_service") or "").strip()
         or f"{options.service_prefix}-{key}",
         container_port=entry.get("container_port") or options.container_port,

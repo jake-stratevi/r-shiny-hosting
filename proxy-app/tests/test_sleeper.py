@@ -405,3 +405,35 @@ async def test_an_unreadable_table_ends_the_pass_quietly():
     await loop.tick()  # must not raise
 
     assert scaler.slept == []
+
+
+@pytest.mark.asyncio
+async def test_a_config_row_is_never_treated_as_an_app():
+    """`__config__` holds the portal's admin list, not an app. Reaching ECS
+    with its (empty) ecs_service once a minute forever is the bug this
+    prevents -- see registry.CONFIG_PREFIX."""
+    store = FakeStore([App.create(host=registry.CONFIG_HOST), row(idle_minutes=15)])
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 3600})
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == ["shiny-model"]
+    assert all(host != registry.CONFIG_HOST for host, _ in store.awake_since_writes)
+    assert all(event.host != registry.CONFIG_HOST for event in recorder.events)
+
+
+@pytest.mark.asyncio
+async def test_a_config_row_with_an_expiry_is_not_expired_either():
+    """Belt and braces: the skip happens before the reaper, not after it."""
+    store = FakeStore([App.create(host=registry.CONFIG_HOST, expires_at=int(NOW - 1))])
+    scaler = FakeScaler()
+    loop, recorder = loop_for(store, scaler, FakeActivity())
+
+    await loop.tick()
+
+    assert store.statuses == []
+    assert scaler.slept == []
+    assert recorder.events == []

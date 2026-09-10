@@ -146,6 +146,68 @@ def test_a_sparse_item_decodes_to_the_defaults():
     assert row.awake_since == 0
 
 
+# --- label and description (the portal's presentation) ---------------------
+
+
+def test_label_and_description_are_optional_and_trimmed():
+    row = App.create(host="a.b", label="  Model  ", description="  What it does  ")
+    assert row.label == "Model"
+    assert row.description == "What it does"
+
+    bare = App.create(host="a.b")
+    assert bare.label == ""
+    assert bare.description == ""
+
+
+def test_display_label_falls_back_so_a_tile_is_never_blank():
+    assert App.create(host="a.b", app_key="model", label="Model").display_label() == "Model"
+    assert App.create(host="a.b", app_key="model").display_label() == "model"
+    assert App.create(host="a.b").display_label() == "a.b"
+
+
+def test_label_and_description_round_trip_and_are_omitted_when_empty():
+    row = App.create(host="a.b", label="Model", description="Does things")
+    item = registry.app_item(row)
+    assert item["label"] == {"S": "Model"}
+    assert item["description"] == {"S": "Does things"}
+    assert registry.app_from_item(item) == row
+
+    assert "label" not in registry.app_item(App.create(host="a.b"))
+    assert "description" not in registry.app_item(App.create(host="a.b"))
+
+
+# --- `__`-prefixed rows are configuration, not apps ------------------------
+
+
+@pytest.mark.parametrize(
+    "host,expected",
+    [
+        ("__config__", True),
+        ("__readyz__", True),
+        ("__anything", True),
+        ("model.tools.stratevi.com", False),
+        ("_single-underscore.example", False),
+        ("", False),
+    ],
+)
+def test_is_config_host(host, expected):
+    assert registry.is_config_host(host) is expected
+
+
+def test_config_rows_are_dropped_from_an_enumeration():
+    """A `__config__` row parsed as an App is a ghost app with no service:
+    the sleeper would describe "" once a minute and the menu would offer a
+    tile nobody can click."""
+    rows = registry.apps_from_items(
+        [
+            {"host": {"S": registry.CONFIG_HOST}, "admin_emails": {"SS": ["jake@stratevi.com"]}},
+            {"host": {"S": "model.tools.stratevi.com"}, "app_key": {"S": "model"}},
+            {"app_key": {"S": "no host at all"}},
+        ]
+    )
+    assert [row.host for row in rows] == ["model.tools.stratevi.com"]
+
+
 # --- the read-through cache ------------------------------------------------
 
 
@@ -158,6 +220,8 @@ class FakeStore:
         self.fail = False
         self.statuses: list[tuple[str, str]] = []
         self.awake_since_writes: list[tuple[str, int]] = []
+        self.patches: list[tuple[str, dict]] = []
+        self.admins: tuple[str, ...] = ()
 
     async def app(self, host: str) -> App | None:
         self.reads += 1
@@ -176,6 +240,12 @@ class FakeStore:
 
     async def set_status(self, host: str, status: str) -> None:
         self.statuses.append((host, status))
+
+    async def patch(self, host: str, changes: dict) -> None:
+        self.patches.append((host, dict(changes)))
+
+    async def admin_emails(self) -> tuple[str, ...]:
+        return self.admins
 
     async def ping(self) -> None:
         pass
@@ -273,3 +343,180 @@ async def test_set_awake_since_passes_through_without_invalidating_the_cache(cac
 
     await cache.app("a.b")
     assert store.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_a_patch_invalidates_the_cached_row_immediately(cached):
+    """An admin who has just revoked access should not have to wait out a
+    cache TTL for it to bite."""
+    store, clock, cache = cached
+    await cache.app("a.b")
+    assert store.reads == 1
+
+    await cache.patch("A.B:443", {"idle_minutes": 45})
+    assert store.patches == [("A.B:443", {"idle_minutes": 45})]
+
+    await cache.app("a.b")
+    assert store.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_patch_still_invalidates_rather_than_leaving_a_stale_row(cached):
+    class Broken(FakeStore):
+        async def patch(self, host, changes):
+            raise RuntimeError("dynamodb is unhappy")
+
+    store = Broken({"a.b": App.create(host="a.b")})
+    cache = registry.CachedRegistry(store, ttl=10.0, clock=Clock())
+    await cache.app("a.b")
+
+    with pytest.raises(RuntimeError):
+        await cache.patch("a.b", {"idle_minutes": 45})
+
+    await cache.app("a.b")
+    assert store.reads == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_emails_pass_through_uncached(cached):
+    store, clock, cache = cached
+    store.admins = ("jake@stratevi.com",)
+    assert await cache.admin_emails() == ("jake@stratevi.com",)
+
+
+# --- the patch encoding ----------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name,value,expected",
+    [
+        ("label", "Model", {"S": "Model"}),
+        ("label", "", None),  # cleared -> the attribute goes away
+        ("description", "  spaced  ", {"S": "spaced"}),
+        ("access_mode", "all_users", {"S": "all_users"}),
+        ("status", "disabled", {"S": "disabled"}),
+        ("allowed_emails", ["JAKE@stratevi.com"], {"SS": ["jake@stratevi.com"]}),
+        ("allowed_emails", [], None),  # DynamoDB has no empty string set
+        ("idle_minutes", 45, {"N": "45"}),
+        ("max_session_hours", 8, {"N": "8"}),
+        ("max_session_hours", 0, None),  # uncapped is absence
+        ("expires_at", 1_800_000_000, {"N": "1800000000"}),
+        ("expires_at", 0, None),  # never is absence
+    ],
+)
+def test_patch_value_encoding(name, value, expected):
+    assert registry.patch_value(name, value) == expected
+
+
+def test_patch_value_refuses_an_attribute_the_portal_may_not_write():
+    for name in ("host", "app_key", "ecs_service", "container_port", "last_active"):
+        with pytest.raises(KeyError):
+            registry.patch_value(name, "anything")
+        assert name not in registry.PATCHABLE_ATTRIBUTES
+
+
+def test_a_patch_expression_sets_and_removes_through_name_placeholders():
+    expression, names, values = registry.patch_expression(
+        {"status": "disabled", "expires_at": 0}
+    )
+    # `status` is a DynamoDB reserved word; interpolating it is rejected.
+    assert "#a0 = :v0" in expression
+    assert expression.count("REMOVE") == 1
+    assert set(names.values()) == {"host", "status", "expires_at"}
+    assert values == {":v0": {"S": "disabled"}}
+
+
+# --- the DynamoDB store ----------------------------------------------------
+
+
+class FakeDynamoClient:
+    def __init__(self, items=None, pages=None) -> None:
+        self.items = items or {}
+        self.pages = pages
+        self.updates: list[dict] = []
+        self.scans = 0
+
+    def get_item(self, *, TableName, Key):  # noqa: N803 - boto3 casing
+        found = self.items.get(Key["host"]["S"])
+        return {"Item": found} if found else {}
+
+    def scan(self, **kwargs):
+        self.scans += 1
+        if self.pages is not None:
+            return self.pages[self.scans - 1]
+        return {"Items": list(self.items.values())}
+
+    def update_item(self, **kwargs):
+        self.updates.append(kwargs)
+        return {}
+
+
+@pytest.mark.asyncio
+async def test_the_store_never_serves_a_config_row_as_an_app():
+    client = FakeDynamoClient({registry.CONFIG_HOST: {"host": {"S": registry.CONFIG_HOST}}})
+    store = registry.DynamoAppStore(client, "shiny-proxy-apps")
+    assert await store.app(registry.CONFIG_HOST) is None
+
+
+@pytest.mark.asyncio
+async def test_the_enumeration_skips_config_rows_and_follows_pages():
+    client = FakeDynamoClient(
+        pages=[
+            {
+                "Items": [
+                    {"host": {"S": registry.CONFIG_HOST}, "admin_emails": {"SS": ["a@b.c"]}},
+                    {"host": {"S": "model.tools.stratevi.com"}},
+                ],
+                "LastEvaluatedKey": {"host": {"S": "model.tools.stratevi.com"}},
+            },
+            {"Items": [{"host": {"S": "dashboard.tools.stratevi.com"}}]},
+        ]
+    )
+    rows = await registry.DynamoAppStore(client, "t").apps()
+    assert [row.host for row in rows] == [
+        "model.tools.stratevi.com",
+        "dashboard.tools.stratevi.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_admin_emails_are_read_from_the_config_row_and_normalized():
+    client = FakeDynamoClient(
+        {
+            registry.CONFIG_HOST: {
+                "host": {"S": registry.CONFIG_HOST},
+                "admin_emails": {"SS": [" JAKE@Stratevi.com ", "", "nick@stratevi.com"]},
+            }
+        }
+    )
+    store = registry.DynamoAppStore(client, "t")
+    assert await store.admin_emails() == ("jake@stratevi.com", "nick@stratevi.com")
+
+
+@pytest.mark.asyncio
+async def test_no_config_row_reads_back_as_no_admins_rather_than_an_error():
+    store = registry.DynamoAppStore(FakeDynamoClient({}), "t")
+    assert await store.admin_emails() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_patch_writes_a_conditional_update_and_nothing_else():
+    client = FakeDynamoClient()
+    await registry.DynamoAppStore(client, "shiny-proxy-apps").patch(
+        "MODEL.tools.stratevi.com:443", {"idle_minutes": 45, "expires_at": 0}
+    )
+
+    call = client.updates[0]
+    assert call["TableName"] == "shiny-proxy-apps"
+    assert call["Key"] == {"host": {"S": "model.tools.stratevi.com"}}
+    # Conditional, so a PATCH against a host deleted between read and write
+    # fails loudly instead of creating a half-built row.
+    assert call["ConditionExpression"] == "attribute_exists(#host)"
+    assert "SET" in call["UpdateExpression"] and "REMOVE" in call["UpdateExpression"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_patch_writes_nothing():
+    client = FakeDynamoClient()
+    await registry.DynamoAppStore(client, "t").patch("a.b", {})
+    assert client.updates == []

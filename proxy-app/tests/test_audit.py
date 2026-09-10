@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 
 import pytest
 
@@ -205,3 +206,121 @@ async def test_optional_attributes_are_omitted_when_empty():
         Event(host="a.b", event=audit.EVENT_SLEEP, at=1.0)
     )
     assert set(client.items[0]) == {"host", "ts", "event", "ts_epoch", "ttl"}
+
+
+# --- reading the trail back (the portal's audit viewer) --------------------
+
+
+class FakeQueryClient:
+    def __init__(self, pages=None) -> None:
+        self.pages = pages or [{"Items": []}]
+        self.calls: list[dict] = []
+
+    def query(self, **kwargs) -> dict:
+        self.calls.append(kwargs)
+        return self.pages[min(len(self.calls) - 1, len(self.pages) - 1)]
+
+
+def audit_item(event="allow", at=1_700_000_000, email="jake@stratevi.com") -> dict:
+    return {
+        "host": {"S": "model.tools.stratevi.com"},
+        "ts": {"S": f"{at * 1000:013d}#abcd1234"},
+        "event": {"S": event},
+        "email": {"S": email},
+        "path": {"S": "/"},
+        "ts_epoch": {"N": str(at)},
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_reader_queries_one_partition_newest_first():
+    client = FakeQueryClient([{"Items": [audit_item()]}])
+    events, cursor = await audit.DynamoAuditReader(client, "shiny-proxy-audit").events(
+        "model.tools.stratevi.com", 25, None
+    )
+
+    call = client.calls[0]
+    assert call["TableName"] == "shiny-proxy-audit"
+    assert call["ExpressionAttributeValues"][":host"] == {
+        "S": "model.tools.stratevi.com"
+    }
+    assert call["ScanIndexForward"] is False  # newest first, per the contract
+    assert call["Limit"] == 25
+    assert "ExclusiveStartKey" not in call
+
+    assert events == [
+        {
+            "event": "allow",
+            "email": "jake@stratevi.com",
+            "path": "/",
+            "outcome": "",
+            "ts": 1_700_000_000,
+        }
+    ]
+    assert cursor is None
+
+
+@pytest.mark.asyncio
+async def test_a_last_evaluated_key_comes_back_as_the_next_start_key():
+    key = {"host": {"S": "a.b"}, "ts": {"S": "0000000000001#aa"}}
+    client = FakeQueryClient([{"Items": [], "LastEvaluatedKey": key}])
+    reader = audit.DynamoAuditReader(client, "t")
+
+    _, cursor = await reader.events("a.b", 10, None)
+    assert cursor == key
+
+    await reader.events("a.b", 10, cursor)
+    assert client.calls[1]["ExclusiveStartKey"] == key
+
+
+@pytest.mark.asyncio
+async def test_the_page_size_is_bounded_however_much_is_asked_for():
+    client = FakeQueryClient()
+    reader = audit.DynamoAuditReader(client, "t")
+    await reader.events("a.b", 10_000, None)
+    assert client.calls[0]["Limit"] == audit.MAX_AUDIT_LIMIT
+
+
+def test_a_row_written_before_ts_epoch_existed_still_reads_back_a_timestamp():
+    item = audit_item()
+    item.pop("ts_epoch")
+    assert audit.event_from_item(item)["ts"] == 1_700_000_000
+
+
+def test_a_row_with_no_usable_timestamp_reads_back_as_null_not_zero():
+    assert audit.event_from_item({"event": {"S": "wake"}})["ts"] is None
+
+
+# --- the opaque cursor -----------------------------------------------------
+
+
+def test_a_cursor_round_trips():
+    key = {"host": {"S": "model.tools.stratevi.com"}, "ts": {"S": "0000001#ab"}}
+    encoded = audit.encode_cursor(key)
+    assert isinstance(encoded, str)
+    assert audit.decode_cursor(encoded) == key
+
+
+def test_no_key_means_no_cursor_and_an_empty_cursor_means_the_first_page():
+    assert audit.encode_cursor(None) is None
+    assert audit.encode_cursor({}) is None
+    assert audit.decode_cursor("") is None
+    assert audit.decode_cursor("   ") is None
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        "not base64 at all!!",
+        base64.urlsafe_b64encode(b"[]").decode(),  # JSON, but not a map
+        base64.urlsafe_b64encode(b'"nope"').decode(),
+        base64.urlsafe_b64encode(b'{"ts": "bare string"}').decode(),
+        base64.urlsafe_b64encode(b'{"ts": {"S": {"nested": 1}}}').decode(),
+        base64.urlsafe_b64encode(b'{"ts": {"X": "unknown type"}}').decode(),
+        base64.urlsafe_b64encode(b'{"ts": {"S": "a", "N": "1"}}').decode(),
+        "A" * (audit.MAX_CURSOR_BYTES + 1),
+    ],
+)
+def test_a_cursor_that_did_not_come_from_us_is_refused_not_handed_to_dynamodb(cursor):
+    with pytest.raises(audit.CursorError):
+        audit.decode_cursor(cursor)

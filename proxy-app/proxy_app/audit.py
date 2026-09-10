@@ -11,6 +11,9 @@ on this module.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import secrets
 import time
@@ -28,6 +31,11 @@ EVENT_EXPIRED = "expired"
 #: requests. Distinct from EVENT_SLEEP so the audit trail can tell "nobody was
 #: using it" apart from "somebody was, and the cap ended their session anyway".
 EVENT_FORCE_SLEEP = "force_sleep"
+#: A successful PATCH through the portal's admin API. The `path` carries the
+#: NAMES of the fields that changed, never their values -- an audit row must
+#: not be somewhere an allowlist can be read out of. Never deduplicated: two
+#: identical edits a second apart are two decisions somebody made.
+EVENT_CONFIG_CHANGE = "config_change"
 
 #: Allow events are collapsed per host+email for this long. A single Shiny
 #: page load is dozens of asset requests by the same person to the same host;
@@ -225,3 +233,131 @@ class DynamoAuditSink:
         await asyncio.to_thread(
             self._client.put_item, TableName=self._table, Item=item
         )
+
+
+# --- reading the trail back (the portal's audit viewer) --------------------
+
+#: Page size when the caller does not ask, and the ceiling when it asks for
+#: too much. A DynamoDB Query page is capped at 1 MB anyway; this bounds the
+#: JSON the browser has to render.
+DEFAULT_AUDIT_LIMIT = 100
+MAX_AUDIT_LIMIT = 500
+
+#: A cursor is a base64-JSON LastEvaluatedKey and nothing else. Anything
+#: bigger than this did not come from us.
+MAX_CURSOR_BYTES = 2048
+
+
+class CursorError(ValueError):
+    """A cursor that did not come from :func:`encode_cursor` (or was edited)."""
+
+
+def encode_cursor(key: dict[str, Any] | None) -> str | None:
+    """Render a DynamoDB LastEvaluatedKey as the contract's opaque cursor.
+
+    Opaque to the CLIENT, not signed: it is a table key, not a capability.
+    The host it points into is already in the URL, and the handler re-checks
+    the caller is an admin on every page.
+    """
+    if not key:
+        return None
+    raw = json.dumps(key, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def decode_cursor(cursor: str) -> dict[str, Any] | None:
+    """Turn a cursor back into an ExclusiveStartKey, or raise.
+
+    Validated rather than trusted: it is handed straight to DynamoDB, so it
+    has to be a flat map of attribute values and nothing else -- never a
+    nested structure someone hand-crafted to see what the SDK does with it.
+    """
+    text = (cursor or "").strip()
+    if not text:
+        return None
+    if len(text) > MAX_CURSOR_BYTES:
+        raise CursorError("cursor is not valid")
+
+    try:
+        padded = text + "=" * (-len(text) % 4)
+        decoded = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        raise CursorError("cursor is not valid") from None
+
+    if not isinstance(decoded, dict) or not decoded:
+        raise CursorError("cursor is not valid")
+    for name, value in decoded.items():
+        if not isinstance(name, str) or not isinstance(value, dict) or len(value) != 1:
+            raise CursorError("cursor is not valid")
+        for kind, inner in value.items():
+            if kind not in ("S", "N", "B") or not isinstance(inner, str):
+                raise CursorError("cursor is not valid")
+    return decoded
+
+
+class DynamoAuditReader:
+    """Reads shiny-proxy-audit back, newest first, for one host.
+
+    Query, not Scan: the table is partitioned by host and the sort key is
+    time-ordered, so "the last hundred events for this app" is one call
+    against one partition. This is the only thing in the service that needs
+    ``dynamodb:Query`` -- see the README's IAM contract.
+    """
+
+    def __init__(self, client: Any, table: str) -> None:
+        self._client = client
+        self._table = table
+
+    async def events(
+        self, host: str, limit: int = DEFAULT_AUDIT_LIMIT, start_key: dict | None = None
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        kwargs: dict[str, Any] = {
+            "TableName": self._table,
+            "KeyConditionExpression": "#host = :host",
+            "ExpressionAttributeNames": {"#host": "host"},
+            "ExpressionAttributeValues": {":host": {"S": host}},
+            # Newest first, as the contract specifies: the sort key is
+            # zero-padded epoch milliseconds, so descending is chronological.
+            "ScanIndexForward": False,
+            "Limit": max(1, min(int(limit), MAX_AUDIT_LIMIT)),
+        }
+        if start_key:
+            kwargs["ExclusiveStartKey"] = start_key
+
+        response = await asyncio.to_thread(self._client.query, **kwargs)
+        events = [event_from_item(item) for item in response.get("Items", ())]
+        return events, response.get("LastEvaluatedKey") or None
+
+
+def event_from_item(item: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """One audit row in the contract's JSON shape.
+
+    ``ts`` comes from ``ts_epoch`` when present and is otherwise recovered
+    from the sort key's millisecond prefix, so a row written by an older
+    build still reads back with a timestamp.
+    """
+    return {
+        "event": _item_s(item, "event"),
+        "email": _item_s(item, "email"),
+        "path": _item_s(item, "path"),
+        "outcome": _item_s(item, "outcome"),
+        "ts": _item_ts(item),
+    }
+
+
+def _item_s(item: dict[str, dict[str, Any]], name: str) -> str:
+    return str((item.get(name) or {}).get("S") or "")
+
+
+def _item_ts(item: dict[str, dict[str, Any]]) -> int | None:
+    raw = (item.get("ts_epoch") or {}).get("N")
+    if raw is not None:
+        try:
+            return int(float(raw))
+        except (TypeError, ValueError):
+            pass
+    sort = _item_s(item, "ts")
+    head = sort.split("#", 1)[0]
+    if head.isdigit():
+        return int(head) // 1000
+    return None

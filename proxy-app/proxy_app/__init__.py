@@ -1,9 +1,12 @@
-"""The Stratevi authorizing proxy (ADR-0014, docs/design/proxy.md).
+"""The Stratevi authorizing proxy and portal (ADR-0014, docs/design/proxy.md
+and docs/design/portal.md).
 
 One always-on aiohttp service that fronts every ``*.tools.stratevi.com`` app
 hostname: it resolves the app from the Host header, decides whether the caller
 may use it, wakes the app's ECS service if it is asleep, reverse-proxies to the
-task (HTTP and websockets), and scales idle apps back to zero.
+task (HTTP and websockets), and scales idle apps back to zero. On the
+hostnames named in ``PORTAL_HOSTS`` it serves the portal instead -- the menu
+and the admin API of docs/design/portal-api.md.
 
 Module map -- the split exists so the decision logic is testable without AWS:
 
@@ -17,6 +20,7 @@ Module map -- the split exists so the decision logic is testable without AWS:
     pages      The six embedded branded pages.
     sleeper    The 60s sleeper/reaper background loop.
     server     The request path and the reserved /__proxy/ endpoints.
+    portal     The portal: /api/v1/*, the admin gate, the React bundle.
 
 Only ``registry``, ``ecsctl`` and ``audit`` contain boto3 calls, and in each of
 those the AWS class sits behind a small async protocol the rest of the code

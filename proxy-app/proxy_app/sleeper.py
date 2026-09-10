@@ -111,6 +111,13 @@ class Loop:
             return
 
         for app in apps:
+            # Belt and braces: the store already filters `__`-prefixed
+            # configuration rows out of the enumeration, but this loop calls
+            # UpdateService, and a bug that let the portal's `__config__` row
+            # through would have it describing a service called "" once a
+            # minute forever.
+            if registry.is_config_host(app.host):
+                continue
             try:
                 if await self._expire(app, now):
                     continue

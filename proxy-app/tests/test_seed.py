@@ -292,3 +292,36 @@ def test_the_catalog_yaml_the_portal_reads_and_the_seed_reads_are_the_same_file(
     assert raw == catalog
     for entry in raw["apps"]:
         assert {"key", "label", "description", "url", "access_mode"} <= set(entry)
+
+
+# --- label and description (the portal's menu reads these off the row) -----
+
+
+def test_the_real_catalog_carries_its_labels_and_descriptions_onto_the_rows(catalog):
+    """ADR-0014 retires catalog.yaml, so the migration has to carry the tile
+    text across or every menu entry loses its name the day the Lambda portal
+    is switched off."""
+    by_key = {app.app_key: app for app in seed.apps_from_catalog(catalog)}
+    assert by_key["dashboard"].label == "Treatment Pathway Dashboard"
+    assert by_key["dashboard"].description.startswith("Sankey diagram")
+    assert by_key["model"].label == "Microsimulation Model"
+    assert by_key["model"].description.startswith("Patient-level microsimulation")
+
+
+def test_dry_run_shows_the_label_and_description_attributes(catalog):
+    rendered = seed.render_items(seed.apps_from_catalog(catalog, only="model"))
+    assert '"label"' in rendered
+    assert '"S": "Microsimulation Model"' in rendered
+    assert '"description"' in rendered
+
+
+def test_an_entry_with_no_label_seeds_without_the_attribute():
+    app = seed.app_from_entry(
+        {
+            "key": "model",
+            "url": "https://model.tools.stratevi.com",
+            "access_mode": "all_users",
+        }
+    )
+    assert app.label == ""
+    assert "label" not in registry.app_item(app)

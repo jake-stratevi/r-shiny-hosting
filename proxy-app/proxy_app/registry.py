@@ -43,6 +43,32 @@ DEFAULT_MAX_SESSION_HOURS = 0  # 0/absent means uncapped -- see App.has_session_
 #: readiness must not be the reason the policy grows.
 READYZ_SENTINEL_HOST = "__readyz__"
 
+#: Rows whose partition key starts with this are CONFIGURATION, not apps.
+#: The table has one item per app keyed by hostname, and a hostname can never
+#: start with an underscore, so the namespace is free and needs no second
+#: table. Everything that enumerates the table -- the registry, the sleeper,
+#: the portal's menu and admin list -- must skip them, or the portal's own
+#: settings row becomes a ghost app that the sleeper tries to scale and the
+#: menu offers people a link to.
+CONFIG_PREFIX = "__"
+
+#: The one config row P1 defines: `admin_emails` (SS), managed as a Terraform
+#: aws_dynamodb_table_item so the admin list is code-reviewed (ADR-0014).
+CONFIG_HOST = "__config__"
+
+
+def is_config_host(host: str) -> bool:
+    """Is this partition key configuration rather than an app?
+
+    Checked on the RAW value as well as the normalized one: normalization
+    lowercases and strips a port, neither of which can remove a leading
+    underscore, but a caller passing an already-normalized key should get the
+    same answer as one passing a Host header.
+    """
+    return (host or "").strip().startswith(CONFIG_PREFIX) or normalize_host(
+        host
+    ).startswith(CONFIG_PREFIX)
+
 
 def normalize_host(host: str | None) -> str:
     """Reduce a Host header to the table's partition key.
@@ -80,6 +106,11 @@ class App:
 
     host: str
     app_key: str = ""
+    # Presentation, for the portal's menu and admin list (ADR-0014). Both are
+    # optional: the access decision never reads them, and an app seeded before
+    # the portal existed simply has none. The menu falls back to app_key.
+    label: str = ""
+    description: str = ""
     ecs_service: str = ""
     container_port: int = DEFAULT_CONTAINER_PORT
     status: str = STATUS_ACTIVE
@@ -104,6 +135,8 @@ class App:
         *,
         host: str,
         app_key: str = "",
+        label: str = "",
+        description: str = "",
         ecs_service: str = "",
         container_port: int | None = None,
         status: str | None = None,
@@ -119,6 +152,8 @@ class App:
         return cls(
             host=normalize_host(host),
             app_key=(app_key or "").strip(),
+            label=(label or "").strip(),
+            description=(description or "").strip(),
             ecs_service=(ecs_service or "").strip(),
             container_port=int(container_port) if container_port else DEFAULT_CONTAINER_PORT,
             status=(status or "").strip().lower() or STATUS_ACTIVE,
@@ -137,6 +172,14 @@ class App:
             max_session_hours=int(max_session_hours or 0),
             awake_since=int(awake_since or 0),
         )
+
+    def display_label(self) -> str:
+        """What a human should see this app called.
+
+        Rows seeded before ``label`` existed have none, and a menu tile
+        reading "" helps nobody.
+        """
+        return self.label or self.app_key or self.host
 
     def allows(self, email: str) -> bool:
         """Is this address on the app's list?"""
@@ -256,6 +299,23 @@ class CachedRegistry:
         self.invalidate(host)
         await self._store.set_status(host, status)
 
+    async def patch(self, host: str, changes: dict[str, Any]) -> None:
+        # Invalidated FIRST and again after: an admin who has just revoked
+        # someone's access should not have to wait out a cache TTL, and a
+        # concurrent request that repopulated the entry mid-write would
+        # otherwise leave the old row cached for another ten seconds.
+        self.invalidate(host)
+        try:
+            await self._store.patch(host, changes)  # type: ignore[attr-defined]
+        finally:
+            self.invalidate(host)
+
+    async def admin_emails(self) -> tuple[str, ...]:
+        # Not cached here: `portal.AdminList` owns that cache, because it is
+        # the one that has to fail closed on an error rather than serve a
+        # stale answer the way app rows do.
+        return await self._store.admin_emails()  # type: ignore[attr-defined]
+
     async def ping(self) -> None:
         await self._store.ping()
 
@@ -278,6 +338,13 @@ def app_item(app: App) -> dict[str, dict[str, Any]]:
         "access_mode": {"S": app.access_mode},
         "idle_minutes": {"N": str(app.idle_minutes)},
     }
+    if app.label:
+        # Omitted rather than written empty, like every other optional
+        # attribute here: an absent attribute and an empty string mean the
+        # same thing and only one of them costs a byte.
+        item["label"] = {"S": app.label}
+    if app.description:
+        item["description"] = {"S": app.description}
     if app.allowed_emails:
         # A DynamoDB string set cannot be empty, hence the guard.
         item["allowed_emails"] = {"SS": list(app.allowed_emails)}
@@ -297,6 +364,8 @@ def app_from_item(item: dict[str, dict[str, Any]]) -> App:
     return App.create(
         host=_read_s(item, "host"),
         app_key=_read_s(item, "app_key"),
+        label=_read_s(item, "label"),
+        description=_read_s(item, "description"),
         ecs_service=_read_s(item, "ecs_service"),
         container_port=_read_n(item, "container_port"),
         status=_read_s(item, "status"),
@@ -308,6 +377,34 @@ def app_from_item(item: dict[str, dict[str, Any]]) -> App:
         max_session_hours=_read_n(item, "max_session_hours"),
         awake_since=_read_n(item, "awake_since"),
     )
+
+
+def apps_from_items(
+    items: Iterable[dict[str, dict[str, Any]]], log: Any | None = None
+) -> list[App]:
+    """Decode a table enumeration into app rows, skipping what is not an app.
+
+    Two kinds of item must never reach a caller that thinks it is holding an
+    app: a ``__``-prefixed configuration row (the portal's ``__config__``
+    admin list lives in this table -- see :data:`CONFIG_PREFIX`), and an item
+    so malformed that decoding it raises. The second is skipped rather than
+    propagated because the caller is usually the sleeper, and one bad hand-
+    edited row must not stop the whole platform being scaled down.
+    """
+    rows: list[App] = []
+    for item in items:
+        host = _read_s(item, "host")
+        if not host or is_config_host(host):
+            continue
+        try:
+            rows.append(app_from_item(item))
+        except Exception as exc:  # pragma: no cover - defence in depth
+            if log is not None:
+                log.warning(
+                    "skipping unparseable app row",
+                    extra={"host": host, "reason": str(exc)},
+                )
+    return rows
 
 
 def _read_s(item: dict[str, dict[str, Any]], name: str) -> str:
@@ -336,6 +433,84 @@ def _read_strings(item: dict[str, dict[str, Any]], name: str) -> Sequence[str]:
     return ()
 
 
+# --- partial writes (the portal's PATCH) -----------------------------------
+
+#: The attributes the portal's admin API may rewrite, in the contract's order
+#: (docs/design/portal-api.md). Everything else about a row -- host, app_key,
+#: ecs_service, container_port -- is provisioning, not configuration, and P2's
+#: creation wizard owns it. Validation of the VALUES lives in `portal`; this
+#: is only the encoding.
+PATCHABLE_ATTRIBUTES = (
+    "label",
+    "description",
+    "access_mode",
+    "allowed_emails",
+    "idle_minutes",
+    "max_session_hours",
+    "expires_at",
+    "status",
+)
+
+
+def patch_value(name: str, value: Any) -> dict[str, Any] | None:
+    """Encode one patched attribute, or ``None`` to REMOVE it.
+
+    ``None`` is a real answer, not a failure: DynamoDB has no empty string
+    set, and "no expiry" / "uncapped" / "no label" are all *absence* on the
+    row -- exactly what :func:`app_item` writes for a fresh row. Encoding an
+    empty value as a removal is what keeps a patched row byte-identical to a
+    seeded one.
+    """
+    if name in ("label", "description", "access_mode", "status"):
+        text = str(value or "").strip()
+        return {"S": text} if text else None
+    if name == "allowed_emails":
+        emails = [str(e).strip().lower() for e in (value or ())]
+        emails = [e for e in emails if e]
+        return {"SS": emails} if emails else None
+    if name == "idle_minutes":
+        # Unlike the rest, absent does not mean "off" -- it means the
+        # DEFAULT_IDLE_MINUTES fallback -- so this one is always written.
+        return {"N": str(int(value))}
+    if name in ("max_session_hours", "expires_at"):
+        number = int(value or 0)
+        return {"N": str(number)} if number else None
+    raise KeyError(f"{name} is not a patchable attribute")
+
+
+def patch_expression(
+    changes: dict[str, Any],
+) -> tuple[str, dict[str, str], dict[str, dict[str, Any]]]:
+    """Build the UpdateItem arguments for a set of patched attributes.
+
+    Every attribute goes through a ``#name`` placeholder rather than being
+    interpolated: ``status`` is a DynamoDB reserved word, and so is anything
+    else someone adds to :data:`PATCHABLE_ATTRIBUTES` in future without
+    checking the (long) list.
+    """
+    sets: list[str] = []
+    removes: list[str] = []
+    names: dict[str, str] = {"#host": "host"}
+    values: dict[str, dict[str, Any]] = {}
+
+    for index, (name, value) in enumerate(changes.items()):
+        encoded = patch_value(name, value)
+        placeholder = f"#a{index}"
+        names[placeholder] = name
+        if encoded is None:
+            removes.append(placeholder)
+        else:
+            sets.append(f"{placeholder} = :v{index}")
+            values[f":v{index}"] = encoded
+
+    clauses = []
+    if sets:
+        clauses.append("SET " + ", ".join(sets))
+    if removes:
+        clauses.append("REMOVE " + ", ".join(removes))
+    return " ".join(clauses), names, values
+
+
 # --- DynamoDB store --------------------------------------------------------
 
 
@@ -348,11 +523,18 @@ class DynamoAppStore:
     botocore clients are safe to share across threads.
     """
 
-    def __init__(self, client: Any, table: str) -> None:
+    def __init__(self, client: Any, table: str, log: Any | None = None) -> None:
         self._client = client
         self._table = table
+        self._log = log
 
     async def app(self, host: str) -> App | None:
+        if is_config_host(host):
+            # A Host header can never contain an underscore, so this can only
+            # be a bug or someone poking at the table's namespace. Either way
+            # a config row is not an app and must not be served as one.
+            return None
+
         response = await asyncio.to_thread(
             self._client.get_item,
             TableName=self._table,
@@ -370,6 +552,10 @@ class DynamoAppStore:
         the design spec's IAM sketch lists only *Item and Query. There is no
         partition key to query on here, and the table has one row per app, so
         the Scan is a handful of items once a minute.
+
+        Configuration rows are filtered out here rather than at every call
+        site: this is the only place the whole table is enumerated, so it is
+        the one place that has to remember.
         """
         found: list[App] = []
         start_key: dict[str, Any] | None = None
@@ -378,11 +564,52 @@ class DynamoAppStore:
             if start_key:
                 kwargs["ExclusiveStartKey"] = start_key
             response = await asyncio.to_thread(self._client.scan, **kwargs)
-            for item in response.get("Items", ()):
-                found.append(app_from_item(item))
+            found.extend(apps_from_items(response.get("Items", ()), self._log))
             start_key = response.get("LastEvaluatedKey")
             if not start_key:
                 return found
+
+    async def admin_emails(self) -> tuple[str, ...]:
+        """The ``__config__`` row's ``admin_emails`` string set.
+
+        Raises rather than returning () on a read failure: the caller
+        (`portal.AdminList`) has to be able to tell "the row says nobody" from
+        "we could not ask", and only one of those should be cached.
+        """
+        response = await asyncio.to_thread(
+            self._client.get_item,
+            TableName=self._table,
+            Key={"host": {"S": CONFIG_HOST}},
+        )
+        item = response.get("Item") or {}
+        return tuple(
+            cleaned
+            for cleaned in (
+                str(e).strip().lower() for e in _read_strings(item, "admin_emails")
+            )
+            if cleaned
+        )
+
+    async def patch(self, host: str, changes: dict[str, Any]) -> None:
+        """Rewrite a subset of one row's attributes.
+
+        Conditional on the row existing, so a PATCH against a host that was
+        deleted between the read and the write fails loudly instead of
+        creating a half-built app row with no ecs_service.
+        """
+        if not changes:
+            return
+        expression, names, values = patch_expression(changes)
+        kwargs: dict[str, Any] = {
+            "TableName": self._table,
+            "Key": {"host": {"S": normalize_host(host)}},
+            "UpdateExpression": expression,
+            "ConditionExpression": "attribute_exists(#host)",
+            "ExpressionAttributeNames": names,
+        }
+        if values:
+            kwargs["ExpressionAttributeValues"] = values
+        await asyncio.to_thread(self._client.update_item, **kwargs)
 
     async def set_last_active(self, host: str, ts: int) -> None:
         await asyncio.to_thread(
@@ -445,7 +672,14 @@ __all__ = [
     "DynamoAppStore",
     "app_from_item",
     "app_item",
+    "apps_from_items",
+    "is_config_host",
     "normalize_host",
+    "patch_expression",
+    "patch_value",
+    "CONFIG_HOST",
+    "CONFIG_PREFIX",
+    "PATCHABLE_ATTRIBUTES",
     "DEFAULT_CACHE_TTL",
     "DEFAULT_CONTAINER_PORT",
     "DEFAULT_IDLE_MINUTES",

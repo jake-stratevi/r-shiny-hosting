@@ -1,12 +1,20 @@
-# proxy-app — the Stratevi authorizing proxy
+# proxy-app — the Stratevi authorizing proxy and portal
 
 One always-on Python service that fronts every `*.tools.stratevi.com` app
 hostname: it decides who may use each app, wakes sleeping ECS services, proxies
 to the task (HTTP and websockets), and scales idle apps back to zero.
 
+It is also the **portal**, on the hostnames named in `PORTAL_HOSTS`: the menu
+every authenticated user sees, and the admin control plane. Same task, same
+table, same deploy — ADR-0014's $9/month buys both roles.
+
 Design: [`../docs/design/proxy.md`](../docs/design/proxy.md) — its "Contract
 details (settled during the first build — normative)" section is what this
-implementation is measured against. Why it exists:
+implementation is measured against — plus
+[`../docs/design/portal.md`](../docs/design/portal.md) and the API contract
+[`../docs/design/portal-api.md`](../docs/design/portal-api.md), which the
+React UI in `portal-ui/` is built against too: **change that file before
+changing either side.** Why any of it exists:
 [ADR-0014](../docs/adr/0014-standalone-control-plane.md) and
 [ADR-0008](../docs/adr/0008-authorization-strategy.md). This directory is
 source only; the Terraform stack that runs it lives in `../proxy/`.
@@ -28,6 +36,7 @@ proxy_app/audit.py      Best-effort, never-blocking audit recorder.
 proxy_app/pages.py      The six branded pages (page.html is package data).
 proxy_app/sleeper.py    The 60s sleeper/reaper loop.
 proxy_app/server.py     The request path and the reserved /__proxy/ endpoints.
+proxy_app/portal.py     The portal: /api/v1/*, the admin gate, the React bundle.
 seed.py                 Migration-time tool: catalog.yaml -> shiny-proxy-apps rows.
 tests/                  pytest. No AWS, no network, no credentials.
 ```
@@ -49,7 +58,10 @@ identity), host normalization, the registry cache, task-discovery caching and
 wake idempotence, the sleeper/reaper pass, audit dedupe and item shape, header
 plumbing, the reserved endpoints, the branded pages, and seed parsing driven
 against the **real** repo-root `catalog.yaml` rather than a fixture that can
-drift away from it.
+drift away from it. For the portal: admin gating including every fail-closed
+path, menu entitlement filtering, the whole PATCH validation matrix,
+`live_state` derivation, the audit cursor round trip, CSRF rejection,
+`__`-row skipping, and portal-host routing versus app-host proxying.
 
 Container:
 
@@ -105,6 +117,25 @@ curl.exe -H "Host: model.tools.stratevi.com" `
 
 `/__proxy/healthz` and `/__proxy/readyz` answer regardless of Host.
 
+To exercise the portal locally, name a host and write yourself a `__config__`
+row before starting the service:
+
+```powershell
+aws dynamodb put-item --table-name shiny-proxy-apps --endpoint-url http://localhost:8000 `
+  --item '{\"host\":{\"S\":\"__config__\"},\"admin_emails\":{\"SS\":[\"jake@stratevi.com\"]}}'
+
+$env:PORTAL_HOSTS = "dashboards.tools.stratevi.com"
+python -m proxy_app
+
+curl.exe -H "Host: dashboards.tools.stratevi.com" `
+         -H "x-amzn-oidc-data: h.$payload.s" `
+         http://localhost:8080/api/v1/menu
+```
+
+With no `PORTAL_DIST` build present, `/` answers with the "not built yet"
+page and the API works regardless — that is the deployable-before-the-UI
+case, not a broken one.
+
 To point it at a real Shiny container instead of ECS, run one locally and put
 its address in the row's `ecs_service`… you cannot — discovery goes through
 ECS. Use `docker run` plus DynamoDB Local to exercise the decision path, and
@@ -120,14 +151,89 @@ the `tests/` fakes to exercise the rest.
 | `AUDIT_TABLE` | **yes** | — | `shiny-proxy-audit`. |
 | `PORT` | no | `8080` | Listen port; the ALB target group points here. |
 | `LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error`. |
+| `PORTAL_HOSTS` | no | *(empty)* | Comma-separated hostnames the **portal** answers on, e.g. `dashboards.tools.stratevi.com,proxy.tools.stratevi.com`. Empty means no portal and this service behaves exactly as it did before. Case, ports and trailing dots are normalized. |
+| `PORTAL_DIST` | no | `./portal-dist` | Directory holding the built React bundle. A missing directory is **not** an error — the API answers and `/` serves a "not built yet" page. |
 
 Anything required and missing is exit code 2 at startup, not a degraded mode.
 There are no other environment variables: nothing here reads a config file, a
 Parameter Store path, or a secret.
 
+A portal hostname needs **no row** in `shiny-proxy-apps`: `PORTAL_HOSTS` is
+checked before the table, so the portal cannot be shadowed by a row and does
+not need one to exist.
+
 Logs are one JSON object per line on stdout, for the awslogs driver.
 `LOG_LEVEL=debug` deliberately does **not** turn on botocore's several hundred
 lines per DynamoDB call.
+
+## The portal
+
+Served only on `PORTAL_HOSTS`. `/__proxy/*` stays reserved everywhere,
+including there — the ALB health check must not depend on the portal.
+
+The contract is [`../docs/design/portal-api.md`](../docs/design/portal-api.md)
+and it is normative; this is the summary.
+
+| Method + path | Who | What |
+|---|---|---|
+| `GET /api/v1/me` | any signed-in user | `{ "email", "is_admin" }` |
+| `GET /api/v1/menu` | any signed-in user | the apps that caller is entitled to, with `live_state` |
+| `GET /api/v1/apps` | admin | every app, full objects |
+| `GET /api/v1/apps/{host}` | admin | one app, 404 if unknown |
+| `PATCH /api/v1/apps/{host}` | admin + CSRF header | edit `label`, `description`, `access_mode`, `allowed_emails`, `idle_minutes`, `max_session_hours`, `expires_at`, `status` |
+| `GET /api/v1/apps/{host}/audit?limit=&cursor=` | admin | the trail, newest first, `cursor` is an opaque base64-JSON `LastEvaluatedKey` |
+| anything else | any signed-in user | the React bundle, with `index.html` as the SPA fallback |
+
+Non-2xx bodies are `{"error": "…"}`. A store or ECS failure the portal cannot
+paper over is a `503` with the same body shape.
+
+**The menu reuses `access.decide`.** It cannot offer a tile the proxy would
+then refuse — which is exactly the drift ADR-0013's `catalog.yaml` suffered
+from and this replaces.
+
+**`live_state` is derived, never stored**: `expired` (status *or* the clock)
+→ `disabled` → then ECS: `desired == 0` is `asleep`, `desired > 0` with
+`running == 0` is `starting`, otherwise `awake`. A describe failure degrades
+the badge to `asleep`; it never fails the page.
+
+**PATCH needs `X-Portal-Csrf`** (any non-empty value; `1` by convention).
+Presence is the whole check: a same-origin `fetch` sets a custom header
+trivially and a cross-site HTML form cannot set one at all. Auth is still the
+ALB's Cognito session. `status` accepts only `active` and `disabled` — expiry
+is the reaper's to declare — and reserved access modes are refused at the
+door rather than stored and 403'd later. Every successful PATCH writes a
+`config_change` audit event carrying the caller's email and the changed field
+**names** (never their values, so the trail is not somewhere an allowlist can
+be read out of), and is never deduplicated.
+
+**Admins come from a `__config__` row**, and `__`-prefixed rows are
+configuration, not apps — skipped by the registry, the sleeper and the menu
+alike. The list is cached ~30s, and fails **closed**: no row, no
+`admin_emails`, an unreadable table, or a principal with no resolvable email
+all mean "not an admin". A *failed* read is cached for only ~5s, so a
+DynamoDB blip does not lock the control plane for half a minute.
+
+```
+host          S    "__config__"
+admin_emails  SS   ["jake@stratevi.com", …]   lowercased on read
+```
+
+Managed as a Terraform `aws_dynamodb_table_item` (ADR-0014), so granting
+yourself admin is a code review, not a console edit.
+
+**The bundle.** `PORTAL_DIST` (default `/app/portal-dist`, created empty by
+the Dockerfile) holds the Vite output. `/assets/*` is served with a one-year
+immutable cache — the filename hash is the cache key — and everything else
+falls back to `index.html`, served `no-store` so a deploy is picked up. A
+missing asset is a 404, not the SPA document: an SPA fallback there turns a
+broken build into a blank page. With no bundle at all, `/` serves a plain
+"not built yet" page and the API still works, so the backend deploys before
+`portal-ui/` exists.
+
+The proxy's own operational pages (starting-up, 401, 403, expired, unknown
+host) stay embedded plain HTML on every host, portal included — portal.md's
+hard rule. They render during cold starts and failures and must never depend
+on a JS bundle loading.
 
 ## IAM contract (task role `shiny-proxy-task`)
 
@@ -135,6 +241,8 @@ lines per DynamoDB call.
   `ecs:UpdateService` — condition-scoped to `ECS_CLUSTER`.
 - `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`,
   `dynamodb:Scan` — on the two tables only.
+- `dynamodb:Query` on the **audit** table — added by the portal's audit
+  viewer. It is the only thing in the service that reads the trail back.
 
 Two of those are not in the design spec's original sketch and are load-bearing:
 `ecs:ListTasks` (DescribeTasks takes ARNs, and only ListTasks produces them for
@@ -143,9 +251,7 @@ minute; there is no partition key to Query on).
 
 `dynamodb:DescribeTable` is deliberately **not** required: `/__proxy/readyz`
 probes with a GetItem against the sentinel key `__readyz__` instead, so
-readiness does not widen the policy. `dynamodb:Query` is not used by the proxy
-either — it is only useful for reading the audit trail back, from a human's
-credentials.
+readiness does not widen the policy.
 
 `seed.py` needs `dynamodb:PutItem` on the apps table, run from a human's
 credentials, not the task role.
@@ -156,8 +262,10 @@ credentials, not the task role.
 
 | Attribute | Type | Notes |
 |---|---|---|
-| `host` | S | normalized: lowercase, no port, no trailing dot |
+| `host` | S | normalized: lowercase, no port, no trailing dot. A **`__`-prefixed** key is configuration, not an app (see `__config__` above) and is skipped everywhere |
 | `app_key` | S | matches the Terraform `app_key` |
+| `label` | S | optional; what the portal's tile is called. Falls back to `app_key` |
+| `description` | S | optional; one line under the tile |
 | `ecs_service` | S | service name inside `ECS_CLUSTER` |
 | `container_port` | N | default 3838 |
 | `status` | S | `active` / `disabled` / `expired` |
@@ -174,7 +282,7 @@ credentials, not the task role.
 | Attribute | Type | Notes |
 |---|---|---|
 | `ts` | S | `<13-digit epoch ms>#<8 hex>` — sortable, collision-proof across tasks |
-| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` / `force_sleep` |
+| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` / `force_sleep` / `config_change` |
 | `email`, `path`, `outcome` | S | present when known |
 | `ts_epoch` | N | seconds, for humans reading the console |
 | `ttl` | N | 90 days after the event |
@@ -279,6 +387,11 @@ proxy refuses every request to.
 `max_session_hours` is an optional per-app `catalog.yaml` key (the force-sleep
 cap, see above); omitted entries seed as uncapped, and `--dry-run` prints the
 attribute only for an entry that sets it.
+
+Each entry's `label` and `description` are carried onto the row: ADR-0014
+retires `catalog.yaml`, and the portal's menu reads them from the table. A
+migration that dropped them would leave every tile nameless the day the
+ADR-0013 Lambda portal is switched off.
 
 Keep `catalog.yaml` in sync with each app's `terraform.tfvars` `allowed_emails`
 until the portal phase collapses the two (ADR-0013).

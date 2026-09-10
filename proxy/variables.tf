@@ -57,6 +57,12 @@ variable "listener_rule_priority" {
   default     = 5000
 }
 
+variable "portal_menu_subdomain" {
+  description = "Host of the user-facing portal menu (Jake's call 2026-09-10: keep 'dashboards', continuity with the ADR-0013 Lambda portal it replaces). The proxy answers it with the portal UI once rule 50 is retired."
+  type        = string
+  default     = "dashboards"
+}
+
 variable "proxy_subdomain" {
   description = "Host the proxy answers on directly (health page, and its own Cognito callback), e.g. 'proxy' -> proxy.tools.stratevi.com. Covered by the wildcard alias in dns.tf, so no separate DNS record is needed for it."
   type        = string

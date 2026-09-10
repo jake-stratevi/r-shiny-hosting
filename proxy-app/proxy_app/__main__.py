@@ -18,7 +18,7 @@ from aiohttp import web
 from . import activity as activity_mod
 from . import audit as audit_mod
 from . import config as config_mod
-from . import ecsctl, registry, server, sleeper
+from . import ecsctl, portal as portal_mod, registry, server, sleeper
 
 #: Both short enough that a revoked entitlement or a replaced task is picked up
 #: within seconds, long enough that a page full of assets is one lookup rather
@@ -36,7 +36,8 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
     ecs = boto_session.client("ecs")
 
     apps = registry.CachedRegistry(
-        registry.DynamoAppStore(dynamodb, cfg.apps_table), REGISTRY_CACHE_TTL
+        registry.DynamoAppStore(dynamodb, cfg.apps_table, log.getChild("registry")),
+        REGISTRY_CACHE_TTL,
     )
     tasks = ecsctl.Controller(
         ecsctl.Boto3EcsBackend(ecs, cfg.cluster), TASK_CACHE_TTL
@@ -53,6 +54,22 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
     )
     loop_task = asyncio.get_running_loop().create_task(loop.run())
 
+    # Off unless PORTAL_HOSTS names something. With no portal hosts this
+    # service is byte-for-byte the proxy it was before ADR-0014's second half.
+    portal = None
+    if cfg.portal_enabled():
+        portal = portal_mod.Portal(
+            apps=apps,
+            tasks=tasks,
+            admins=portal_mod.AdminList(
+                apps.admin_emails, log=log.getChild("portal")
+            ),
+            recorder=recorder,
+            audit=audit_mod.DynamoAuditReader(dynamodb, cfg.audit_table),
+            dist=cfg.portal_dist,
+            log=log.getChild("portal"),
+        )
+
     client = server.make_session()
     proxy = server.Proxy(
         apps=apps,
@@ -62,6 +79,8 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
         session=client,
         ready=apps.ping,
         log=log.getChild("server"),
+        portal=portal,
+        portal_hosts=cfg.portal_hosts,
     )
 
     runner = web.AppRunner(
@@ -85,6 +104,8 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
             "audit_table": cfg.audit_table,
             "region": cfg.region or "(sdk default)",
             "log_level": cfg.log_level,
+            "portal_hosts": list(cfg.portal_hosts) or "(portal off)",
+            "portal_dist": cfg.portal_dist if cfg.portal_enabled() else "(portal off)",
         },
     )
 

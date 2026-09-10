@@ -22,6 +22,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY proxy_app/ ./proxy_app/
 COPY seed.py ./
 
+# The portal's React bundle (PORTAL_DIST, default ./portal-dist). The build
+# procedure (RUNBOOK.md "Proxy operations") runs `npm run build` in
+# ../portal-ui and copies its dist/ into ./portal-dist BEFORE `docker build`
+# -- Node never enters this image. The directory is committed with a
+# .gitkeep so the COPY succeeds even when the UI hasn't been built; in that
+# state the JSON API still works and `/` serves a "not built yet" page.
+COPY portal-dist/ ./portal-dist/
+
 # Non-root. The proxy is in the request path for every app on the platform;
 # it needs no privileged port (the ALB target group points at 8080) and no
 # write access to anything. Named "shinyproxy" because Debian's base image

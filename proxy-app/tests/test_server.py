@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from multidict import CIMultiDict
 
@@ -374,3 +375,94 @@ def test_untrusted_values_are_escaped_into_the_page():
 
 def test_the_no_access_page_never_shows_a_synthetic_username_as_a_name():
     assert NO_EMAIL_LABEL in pages.no_access(NO_EMAIL_LABEL).text
+
+
+# --- portal hosts (ADR-0014's second half) ---------------------------------
+
+
+class FakePortal:
+    """Stands in for portal.Portal behind server.PortalLike."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    async def handle(self, request):
+        self.paths.append(request.path)
+        return web.Response(status=200, text="portal")
+
+
+class FakeRegistryReturningNothing:
+    async def app(self, host: str):
+        return None
+
+    async def set_awake_since(self, host: str, ts: int) -> None:
+        pass
+
+
+def routed(portal_hosts=("dashboards.tools.stratevi.com",)):
+    portal = FakePortal()
+    handler = proxy(
+        apps=FakeRegistryReturningNothing(),
+        recorder=FakeRecorderForWake(),
+        portal=portal,
+        portal_hosts=portal_hosts,
+    )
+    return handler, portal
+
+
+@pytest.mark.asyncio
+async def test_a_portal_host_is_answered_by_the_portal_not_proxied():
+    handler, portal = routed()
+    response = await handler.handle(
+        request(path="/admin", headers={"Host": "dashboards.tools.stratevi.com"})
+    )
+    assert response.status == 200
+    assert portal.paths == ["/admin"]
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["Dashboards.Tools.Stratevi.com", "dashboards.tools.stratevi.com:443",
+     "dashboards.tools.stratevi.com."],
+)
+@pytest.mark.asyncio
+async def test_a_portal_host_is_matched_however_it_arrives(host):
+    handler, portal = routed()
+    await handler.handle(request(path="/", headers={"Host": host}))
+    assert portal.paths == ["/"]
+
+
+@pytest.mark.asyncio
+async def test_an_app_host_is_still_proxied_with_the_portal_running():
+    handler, portal = routed()
+    response = await handler.handle(
+        request(path="/", headers={"Host": "model.tools.stratevi.com"})
+    )
+    # No row for that host, so the branded 404 -- the app path, untouched.
+    assert response.status == 404
+    assert portal.paths == []
+
+
+@pytest.mark.asyncio
+async def test_the_reserved_namespace_wins_even_on_a_portal_host():
+    """The ALB health check must not depend on the portal answering."""
+    handler, portal = routed()
+    response = await handler.handle(
+        request(
+            path="/__proxy/healthz", headers={"Host": "dashboards.tools.stratevi.com"}
+        )
+    )
+    assert response.status == 200
+    assert response.text.strip() == "ok"
+    assert portal.paths == []
+
+
+@pytest.mark.asyncio
+async def test_with_no_portal_configured_every_host_is_an_app_host():
+    handler = proxy(
+        apps=FakeRegistryReturningNothing(), recorder=FakeRecorderForWake()
+    )
+    response = await handler.handle(
+        request(path="/", headers={"Host": "dashboards.tools.stratevi.com"})
+    )
+    assert response.status == 404
