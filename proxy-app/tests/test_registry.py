@@ -520,3 +520,154 @@ async def test_an_empty_patch_writes_nothing():
     client = FakeDynamoClient()
     await registry.DynamoAppStore(client, "t").patch("a.b", {})
     assert client.updates == []
+
+
+# --- P2a: the creation attributes and the slug reservation -----------------
+
+
+class ReservingClient(FakeDynamoClient):
+    """FakeDynamoClient plus the conditional PutItem the wizard depends on."""
+
+    def __init__(self, items=None, *, taken=()) -> None:
+        super().__init__(items)
+        self.puts: list[dict] = []
+        self.taken = set(taken)
+
+    def put_item(self, **kwargs):
+        host = kwargs["Item"]["host"]["S"]
+        if "ConditionExpression" in kwargs and host in self.taken:
+            error = RuntimeError("ConditionalCheckFailedException")
+            error.response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+            raise error
+        self.puts.append(kwargs)
+        self.taken.add(host)
+        return {}
+
+
+def created_row(**overrides) -> App:
+    defaults = dict(
+        host="tarpeyo.tools.stratevi.com",
+        app_key="tarpeyo",
+        ecs_service="shiny-tarpeyo",
+        status=registry.STATUS_BUILDING,
+        cpu=512,
+        memory=2048,
+        packages=["shiny", "ggplot2"],
+        upload_key="uploads/3f2504e0-4f89-11d3-9a0c-0305e82c3301.zip",
+        release_tag="r1",
+        image="1.dkr.ecr.x/shiny-tarpeyo:r1",
+        build_id="shiny-app-build:abc-123",
+        build_started_at=1_800_000_000,
+        build_error="",
+        created_by="jake@stratevi.com",
+        created_at=1_799_999_000,
+    )
+    defaults.update(overrides)
+    return App.create(**defaults)
+
+
+def test_the_creation_attributes_round_trip():
+    row = created_row()
+    assert registry.app_from_item(registry.app_item(row)) == row
+
+
+def test_an_app_seeded_before_p2a_has_none_of_the_creation_attributes():
+    item = registry.app_item(App.create(host="a.b"))
+    for name in ("cpu", "memory", "packages", "upload_key", "release_tag", "image",
+                 "build_id", "build_started_at", "build_error", "created_by",
+                 "created_at"):
+        assert name not in item
+
+
+@pytest.mark.asyncio
+async def test_reserving_a_slug_is_a_conditional_put():
+    client = ReservingClient()
+    await registry.DynamoAppStore(client, "shiny-proxy-apps").reserve(created_row())
+
+    put = client.puts[0]
+    assert put["TableName"] == "shiny-proxy-apps"
+    assert put["ConditionExpression"] == "attribute_not_exists(#host)"
+    assert put["ExpressionAttributeNames"] == {"#host": "host"}
+    assert put["Item"]["status"] == {"S": "building"}
+
+
+@pytest.mark.asyncio
+async def test_losing_the_race_for_a_slug_raises_host_taken():
+    """The mutex. Two wizards, one key, exactly one winner -- and the loser
+    has provisioned nothing, because this is the first step."""
+    client = ReservingClient(taken={"tarpeyo.tools.stratevi.com"})
+    store = registry.DynamoAppStore(client, "t")
+
+    with pytest.raises(registry.HostTaken):
+        await store.reserve(created_row())
+    assert client.puts == []
+
+
+@pytest.mark.asyncio
+async def test_any_other_put_failure_is_not_disguised_as_a_collision():
+    class Broken(ReservingClient):
+        def put_item(self, **kwargs):
+            error = RuntimeError("ProvisionedThroughputExceededException")
+            error.response = {"Error": {"Code": "ProvisionedThroughputExceededException"}}
+            raise error
+
+    with pytest.raises(RuntimeError, match="Throughput"):
+        await registry.DynamoAppStore(Broken(), "t").reserve(created_row())
+
+
+@pytest.mark.asyncio
+async def test_the_creator_list_and_the_denylist_come_off_the_same_config_row():
+    client = FakeDynamoClient(
+        {
+            registry.CONFIG_HOST: {
+                "host": {"S": registry.CONFIG_HOST},
+                "admin_emails": {"SS": ["jake@stratevi.com"]},
+                "creator_emails": {"SS": [" NICK@Stratevi.com ", ""]},
+                "key_denylist": {"SS": ["Tarpeyo", "acme"]},
+            }
+        }
+    )
+    store = registry.DynamoAppStore(client, "t")
+
+    assert await store.admin_emails() == ("jake@stratevi.com",)
+    # Separate sets: an admin is not a creator by being an admin.
+    assert await store.creator_emails() == ("nick@stratevi.com",)
+    assert await store.key_denylist() == ("tarpeyo", "acme")
+
+
+@pytest.mark.asyncio
+async def test_a_config_row_with_no_creator_emails_returns_nothing_not_an_error():
+    client = FakeDynamoClient(
+        {registry.CONFIG_HOST: {"host": {"S": registry.CONFIG_HOST}}}
+    )
+    store = registry.DynamoAppStore(client, "t")
+    assert await store.creator_emails() == ()
+    assert await store.key_denylist() == ()
+
+
+@pytest.mark.parametrize(
+    "name,value,expected",
+    [
+        ("build_id", "shiny-app-build:abc", {"S": "shiny-app-build:abc"}),
+        ("build_id", "", None),
+        ("build_error", "the image build failed", {"S": "the image build failed"}),
+        ("build_error", "", None),  # cleared on a successful rebuild
+        ("image", "1.dkr.ecr.x/shiny-a:r1", {"S": "1.dkr.ecr.x/shiny-a:r1"}),
+        ("build_started_at", 1_800_000_000, {"N": "1800000000"}),
+        ("build_started_at", 0, None),
+    ],
+)
+def test_the_build_attributes_encode(name, value, expected):
+    assert registry.patch_value(name, value) == expected
+    assert name in registry.BUILD_ATTRIBUTES
+
+
+def test_what_a_build_was_made_from_is_not_rewritable():
+    """cpu, memory, packages and upload_key are written once by the
+    conditional put. A build must not change under its own record."""
+    for name in ("cpu", "memory", "packages", "upload_key", "release_tag",
+                 "created_by", "created_at"):
+        with pytest.raises(KeyError):
+            registry.patch_value(name, "anything")
+        assert name not in registry.PATCHABLE_ATTRIBUTES
+        assert name not in registry.BUILD_ATTRIBUTES

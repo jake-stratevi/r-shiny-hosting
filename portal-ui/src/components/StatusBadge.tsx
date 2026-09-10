@@ -41,6 +41,19 @@ const STYLES: Record<LiveState, Style> = {
     chip: 'bg-red-50 text-red-700 ring-red-600/20',
     dot: 'bg-red-500',
   },
+  // P2a. Building is work in progress, so it borrows `starting`'s amber and
+  // its pulse; a failed build is a stopped app, so it is red like `expired`.
+  building: {
+    label: 'Building',
+    chip: 'bg-amber-50 text-amber-800 ring-amber-600/25',
+    dot: 'bg-amber-500',
+    pulse: true,
+  },
+  build_failed: {
+    label: 'Build failed',
+    chip: 'bg-red-50 text-red-700 ring-red-600/20',
+    dot: 'bg-red-500',
+  },
 }
 
 const UNKNOWN: Style = {
@@ -50,9 +63,9 @@ const UNKNOWN: Style = {
 }
 
 /**
- * The one place a live_state turns into pixels. P2 adds `building` and
- * `build_failed`; until the API sends them, anything unrecognised falls back
- * to a neutral chip showing the raw value rather than crashing.
+ * The one place a live_state turns into pixels. `building` and `build_failed`
+ * arrived with P2a; anything still unrecognised falls back to a neutral chip
+ * showing the raw value rather than crashing.
  */
 export function StatusBadge({
   state,

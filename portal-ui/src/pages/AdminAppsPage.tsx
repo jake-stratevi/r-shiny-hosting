@@ -1,7 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { App } from '../api/types'
-import { Button } from '../components/Button'
+import { ButtonRoute } from '../components/Button'
 import { Monogram } from '../components/Monogram'
 import { StatTile } from '../components/StatTile'
 import { StatusBadge } from '../components/StatusBadge'
@@ -18,11 +18,20 @@ import {
 import { useResource } from '../hooks/useResource'
 import { useVisiblePolling } from '../hooks/useVisiblePolling'
 import { accessSummary, attentionFlag, expirySummary, needsAttention } from '../lib/appDisplay'
+import { useMe } from '../lib/meContext'
 import { formatDate, formatDateTime, relativeTime } from '../lib/time'
 
-const detailPath = (host: string) => `/admin/apps/${encodeURIComponent(host)}`
+/**
+ * An app mid-build has no settings worth editing yet, so its row points at
+ * the build screen instead of the detail page.
+ */
+const detailPath = (host: string, liveState?: string) =>
+  liveState === 'building'
+    ? `/admin/apps/${encodeURIComponent(host)}/build`
+    : `/admin/apps/${encodeURIComponent(host)}`
 
 export function AdminAppsPage() {
+  const me = useMe()
   const { data, error, loading, reload } = useResource('apps', (signal) => api.apps(signal))
 
   useVisiblePolling(() => reload({ quiet: true }), 15_000)
@@ -43,15 +52,14 @@ export function AdminAppsPage() {
         description="Every app in the registry, and who can open it."
         meta="Live state refreshes every 15 seconds while this tab is visible."
         actions={
-          <Button
-            variant="outline"
-            disabled
-            title="The app-creation wizard arrives in P2"
-            aria-disabled="true"
-          >
-            <PlusIcon className="h-4 w-4" />
-            New app
-          </Button>
+          // Creation is its own permission: an admin without it never sees
+          // this, rather than being dangled a 403 (portal-p2a.md Decisions).
+          me?.can_create ? (
+            <ButtonRoute to="/admin/apps/new" variant="outline">
+              <PlusIcon className="h-4 w-4" />
+              New app
+            </ButtonRoute>
+          ) : null
         }
       />
 
@@ -252,7 +260,7 @@ function AppCard({ app }: { app: App }) {
     // string and the card overflows the viewport on a phone.
     <li className="min-w-0">
       <Link
-        to={detailPath(app.host)}
+        to={detailPath(app.host, app.live_state)}
         className="group flex h-full flex-col rounded-card border border-line bg-surface p-4 shadow-card transition-all hover:-translate-y-px hover:border-accent-line hover:shadow-card-hover"
       >
         <div className="flex items-start gap-3">
@@ -351,7 +359,7 @@ function AppTable({ apps }: { apps: App[] }) {
                   onClick={(event) => {
                     // Let a real click on the link (or a modified click) win.
                     if (event.defaultPrevented || event.metaKey || event.ctrlKey) return
-                    navigate(detailPath(app.host))
+                    navigate(detailPath(app.host, app.live_state))
                   }}
                   className="cursor-pointer transition-colors hover:bg-accent-soft/40"
                 >
@@ -365,7 +373,7 @@ function AppTable({ apps }: { apps: App[] }) {
                       />
                       <div className="min-w-0">
                         <Link
-                          to={detailPath(app.host)}
+                          to={detailPath(app.host, app.live_state)}
                           className="block truncate font-medium text-ink hover:text-accent hover:underline"
                         >
                           {label}

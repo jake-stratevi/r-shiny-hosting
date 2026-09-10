@@ -2,7 +2,7 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { App } from '../api/types'
-import { renderPage } from '../test/render'
+import { adminNoCreateMe, renderPage } from '../test/render'
 import { AdminAppsPage } from './AdminAppsPage'
 
 const apps = vi.hoisted(() => vi.fn())
@@ -151,11 +151,42 @@ describe('AdminAppsPage', () => {
     )
   })
 
-  it('shows admins the P2 "New app" affordance, disabled', async () => {
+  it('links a creator to the wizard from the "New app" action', async () => {
     renderPage(<AdminAppsPage />, { route: '/admin' })
 
-    const button = await screen.findByRole('button', { name: 'New app' })
-    expect(button).toBeDisabled()
-    expect(button).toHaveAttribute('title', expect.stringContaining('P2'))
+    const link = await screen.findByRole('link', { name: 'New app' })
+    expect(link).toHaveAttribute('href', '/admin/apps/new')
+  })
+
+  it('hides "New app" from an admin who may not create', async () => {
+    renderPage(<AdminAppsPage />, { route: '/admin', me: adminNoCreateMe })
+
+    // Wait for the page proper, not just the spinner.
+    await screen.findByRole('link', { name: /Treatment Pathway/ })
+    expect(screen.queryByRole('link', { name: 'New app' })).not.toBeInTheDocument()
+    expect(screen.queryByText('New app')).not.toBeInTheDocument()
+  })
+
+  it('sends a building app to its build screen rather than its settings', async () => {
+    apps.mockResolvedValue([
+      ...rows,
+      app({
+        host: 'access-atlas.tools.stratevi.com',
+        app_key: 'access-atlas',
+        label: 'Access Atlas',
+        status: 'building',
+        live_state: 'building',
+        desired_count: 0,
+        running_count: 0,
+      }),
+    ])
+    renderPage(<AdminAppsPage />, { route: '/admin' })
+
+    const link = await screen.findByRole('link', { name: /Access Atlas/ })
+    expect(link).toHaveAttribute(
+      'href',
+      '/admin/apps/access-atlas.tools.stratevi.com/build',
+    )
+    expect(screen.getByText('Building')).toBeInTheDocument()
   })
 })

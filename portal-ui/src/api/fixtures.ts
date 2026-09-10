@@ -12,12 +12,16 @@ const DAY = 24 * HOUR
 export const fixtureMe: Me = {
   email: 'jake@stratevi.com',
   is_admin: true,
+  // P2a: independent of is_admin. `__portalMock.setCreator(false)` turns it
+  // off to see the admin-who-cannot-create view.
+  can_create: true,
 }
 
 /** Flip to exercise the non-admin path: `is_admin: false`. */
 export const fixtureNonAdminMe: Me = {
   email: 'client@example.com',
   is_admin: false,
+  can_create: false,
 }
 
 export const fixtureApps: App[] = [
@@ -123,6 +127,70 @@ export const fixtureApps: App[] = [
     desired_count: 0,
     running_count: 0,
   },
+  // P2a states, so the amber-animated and red build chips are on screen
+  // without having to run the wizard first.
+  {
+    host: 'access-atlas.tools.stratevi.com',
+    app_key: 'access-atlas',
+    label: 'Access Atlas',
+    description: 'County-level payer coverage map. Created this morning; still building.',
+    ecs_service: 'shiny-access-atlas',
+    container_port: 3838,
+    status: 'building',
+    live_state: 'building',
+    access_mode: 'users',
+    allowed_emails: ['jake@stratevi.com'],
+    idle_minutes: 20,
+    max_session_hours: 12,
+    expires_at: NOW + 90 * DAY,
+    last_active: null,
+    awake_since: null,
+    desired_count: 0,
+    running_count: 0,
+  },
+  {
+    host: 'copay-sim.tools.stratevi.com',
+    app_key: 'copay-sim',
+    label: 'Copay Simulator',
+    description: 'First build failed on an rstan install. Row kept for inspection.',
+    ecs_service: 'shiny-copay-sim',
+    container_port: 3838,
+    status: 'build_failed',
+    live_state: 'build_failed',
+    access_mode: 'users',
+    allowed_emails: ['jake@stratevi.com'],
+    idle_minutes: 10,
+    max_session_hours: 12,
+    expires_at: null,
+    last_active: null,
+    awake_since: null,
+    desired_count: 0,
+    running_count: 0,
+  },
+]
+
+// There is no inspection fixture: the wizard reads the real zip the user
+// chose, in the browser, so `dev:mock` exercises the real code path.
+
+/**
+ * A believable CodeBuild log tail. The lines are ordered the way the phases
+ * come out, so the build screen's tail grows plausibly as the mock advances.
+ */
+export const fixtureBuildLog: string[] = [
+  '[Container] Entering phase DOWNLOAD_SOURCE',
+  '[Container] Fetching s3://shiny-portal-uploads-652063276768/uploads/…zip',
+  '[Container] Bundle: 41 entries, 2.7 MB extracted, entrypoint app.R',
+  '[Container] Entering phase PRE_BUILD',
+  '[Container] Logging in to 652063276768.dkr.ecr.us-east-1.amazonaws.com',
+  '[Container] Entering phase BUILD',
+  'Step 3/9 : FROM rocker/r-ver:4.4.1',
+  "Step 6/9 : RUN install2.r --error --skipinstalled shiny bslib dplyr tidyr",
+  '* installing *source* package ‘dplyr’ ...',
+  '** byte-compile and prepare package for lazy loading',
+  '* DONE (dplyr)',
+  '* installing *source* package ‘ggplot2’ ...',
+  '* DONE (ggplot2)',
+  '* installing *source* package ‘networkD3’ ...',
 ]
 
 /** Audit log per host, newest first, long enough to exercise "load more". */

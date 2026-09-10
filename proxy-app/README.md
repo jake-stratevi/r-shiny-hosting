@@ -34,16 +34,19 @@ proxy_app/ecsctl.py     Task-IP discovery, wake, sleep, with caches.
 proxy_app/activity.py   Requests + open websockets; persists last_active.
 proxy_app/audit.py      Best-effort, never-blocking audit recorder.
 proxy_app/pages.py      The six branded pages (page.html is package data).
-proxy_app/sleeper.py    The 60s sleeper/reaper loop.
+proxy_app/sleeper.py    The 60s sleeper/reaper loop (+ the P2a build sweep).
 proxy_app/server.py     The request path and the reserved /__proxy/ endpoints.
 proxy_app/portal.py     The portal: /api/v1/*, the admin gate, the React bundle.
+proxy_app/creation.py   P2a validation: key rules, upload cap, wizard body. Pure.
+proxy_app/provision.py  P2a provisioning: ECR, IAM, CodeBuild, ECS, Cognito.
+buildspec/              The Dockerfile template and buildspec CodeBuild runs.
 seed.py                 Migration-time tool: catalog.yaml -> shiny-proxy-apps rows.
 tests/                  pytest. No AWS, no network, no credentials.
 ```
 
-Only `registry`, `ecsctl` and `audit` contain boto3 calls, and in each the AWS
-class sits behind a small async protocol the rest of the code depends on
-instead — which is why the tests need no fake AWS.
+Only `registry`, `ecsctl`, `audit` and `provision` contain boto3 calls, and in
+each the AWS class sits behind a small async protocol the rest of the code
+depends on instead — which is why the tests need no fake AWS.
 
 ## Build and test
 
@@ -57,11 +60,17 @@ no-email cases, the access decision matrix (modes × status × expiry ×
 identity), host normalization, the registry cache, task-discovery caching and
 wake idempotence, the sleeper/reaper pass, audit dedupe and item shape, header
 plumbing, the reserved endpoints, the branded pages, and seed parsing driven
-against the **real** repo-root `catalog.yaml` rather than a fixture that can
-drift away from it. For the portal: admin gating including every fail-closed
+against a synthetic catalog written to a temp directory — the repo-root
+`catalog.yaml` those tests used to read went away with ADR-0013's Lambda
+portal, so the fixture mirrors its shape instead. For the portal: admin gating including every fail-closed
 path, menu entitlement filtering, the whole PATCH validation matrix,
 `live_state` derivation, the audit cursor round trip, CSRF rejection,
-`__`-row skipping, and portal-host routing versus app-host proxying.
+`__`-row skipping, and portal-host routing versus app-host proxying. For
+P2a: the whole key/upload/create validation matrix, creator-versus-admin
+gating on every route, the slug-collision 409, the boundary invariant from
+all four directions, the Cognito read-modify-write proving every
+pre-existing field survives (including a fake that "loses" a URL on write),
+the provisioning failure paths, and the stuck-in-building reaper.
 
 Container:
 
@@ -154,6 +163,36 @@ the `tests/` fakes to exercise the rest.
 | `PORTAL_HOSTS` | no | *(empty)* | Comma-separated hostnames the **portal** answers on, e.g. `dashboards.tools.stratevi.com,proxy.tools.stratevi.com`. Empty means no portal and this service behaves exactly as it did before. Case, ports and trailing dots are normalized. |
 | `PORTAL_DIST` | no | `./portal-dist` | Directory holding the built React bundle. A missing directory is **not** an error — the API answers and `/` serves a "not built yet" page. |
 
+### P2a self-service creation
+
+One more block, **all of it or none of it**. With none of these set, creation
+is simply off: `/me` reports `can_create: false` and the four P2a routes
+answer `503`. With *some* of them set, creation is **also** off and the
+missing names are logged at ERROR on startup — a half-configured pipeline
+that fails at its third API call has already reserved a hostname and created
+an ECR repository, which is far more expensive to clean up than a feature
+that never started.
+
+This is the one part of the contract that degrades instead of exiting 2, and
+the reason is blast radius: this task is in the request path for **every**
+app, so refusing to boot over a misconfigured wizard would take the
+dashboard, the model and the portal down to protect a feature nobody is
+currently using.
+
+| Variable | Meaning |
+|---|---|
+| `UPLOADS_BUCKET` | `shiny-portal-uploads-<acct>`; the presigned PUT target. |
+| `CODEBUILD_PROJECT` | `shiny-app-build`; the one shared build project. |
+| `APP_ROLE_BOUNDARY_ARN` | The Terraform-owned permissions boundary **every** created role carries. See below — there is no mode in which a role is created without it. |
+| `APP_DATA_BUCKET` | `shiny-app-data-<acct>`; each app's role may read only its own `<app-key>/` prefix. |
+| `APP_DOMAIN` | `tools.stratevi.com`; the host is `<key>.<APP_DOMAIN>`. |
+| `APP_SUBNET_IDS` | Comma-separated subnets for the created service. |
+| `APP_SECURITY_GROUP_ID` | The shared apps SG the proxy is already allowed into (`proxy/ecs.tf`'s `apps_from_proxy`). |
+| `APP_EXECUTION_ROLE_ARN` | The shared platform execution role — image pull and log writes, same one every app stack uses. |
+| `APP_LOG_GROUP` | Log group created apps write to; the stream prefix is the app key. |
+| `COGNITO_USER_POOL_ID` | The Hub pool. |
+| `COGNITO_CLIENT_ID` | The **one** shared app client whose callback list grows by one URL per created app. |
+
 Anything required and missing is exit code 2 at startup, not a degraded mode.
 There are no other environment variables: nothing here reads a config file, a
 Parameter Store path, or a secret.
@@ -176,12 +215,16 @@ and it is normative; this is the summary.
 
 | Method + path | Who | What |
 |---|---|---|
-| `GET /api/v1/me` | any signed-in user | `{ "email", "is_admin" }` |
+| `GET /api/v1/me` | any signed-in user | `{ "email", "is_admin", "can_create" }` |
 | `GET /api/v1/menu` | any signed-in user | the apps that caller is entitled to, with `live_state` |
 | `GET /api/v1/apps` | admin | every app, full objects |
 | `GET /api/v1/apps/{host}` | admin | one app, 404 if unknown |
 | `PATCH /api/v1/apps/{host}` | admin + CSRF header | edit `label`, `description`, `access_mode`, `allowed_emails`, `idle_minutes`, `max_session_hours`, `expires_at`, `status` |
 | `GET /api/v1/apps/{host}/audit?limit=&cursor=` | admin | the trail, newest first, `cursor` is an opaque base64-JSON `LastEvaluatedKey` |
+| `POST /api/v1/apps/validate-key` | **creator** | `{ "key" }` → `{ "ok", "host" }` or `{ "ok": false, "reason" }`. Always 200 — a form affordance, not an error. No CSRF header (it mutates nothing). |
+| `POST /api/v1/uploads` | **creator** + CSRF header | `{ "filename", "size" }` → `{ "upload_key", "url", "expires_in": 900 }`. Over-size is refused **before** a URL exists. |
+| `POST /api/v1/apps` | **creator** + CSRF header | the wizard's answers → **202** with the app object at `status: building`. **409** if the slug was taken while submitting. |
+| `GET /api/v1/apps/{host}/build` | **creator** | `{ "state", "phase", "started_at", "elapsed_s", "log_url", "log_tail" }` (plus `reason` when failed). Poll while `live_state` is `building`. |
 | anything else | any signed-in user | the React bundle, with `index.html` as the SPA fallback |
 
 Non-2xx bodies are `{"error": "…"}`. A store or ECS failure the portal cannot
@@ -214,12 +257,124 @@ all mean "not an admin". A *failed* read is cached for only ~5s, so a
 DynamoDB blip does not lock the control plane for half a minute.
 
 ```
-host          S    "__config__"
-admin_emails  SS   ["jake@stratevi.com", …]   lowercased on read
+host            S    "__config__"
+admin_emails    SS   ["jake@stratevi.com", …]   lowercased on read
+creator_emails  SS   who may CREATE apps — not implied by admin
+key_denylist    SS   substrings banned from a public hostname
 ```
 
 Managed as a Terraform `aws_dynamodb_table_item` (ADR-0014), so granting
 yourself admin is a code review, not a console edit.
+
+**Creation is its own permission** (portal-p2a.md's decision). `admin_emails`
+governs editing apps that exist; `creator_emails` governs putting a new
+hostname on the public internet and running an uploaded bundle in it. Being
+an admin grants **none** of the second: an admin who is not a creator gets
+403 from every P2a route, and `/me` reports `can_create: false` so the UI
+hides the "+ New app" affordance rather than dangling a 403. Both lists are
+cached ~30s and fail closed in every direction.
+
+## Self-service creation (P2a)
+
+The pipeline is `wizard → zip to S3 → CodeBuild → ECR → SDK provisioning →
+live`, and none of it is Terraform: per ADR-0012, Terraform owns the
+pipeline's own infrastructure and the portal creates the per-app resources
+through the SDK. A created app is **born proxied**, which is why this is
+possible at all — no listener rule, no target group, no waker, no per-app
+Cognito client.
+
+**Provisioning order, and it is not arbitrary:**
+
+1. **Reserve the row** — a conditional `PutItem` on `attribute_not_exists(host)`
+   at `status: building`. This is the mutex: two wizards submitting the same
+   key both pass `validate-key` (a form affordance, not a lock) and exactly
+   one wins here. It is step one so the loser has provisioned **nothing**.
+2. ECR repository `shiny-<key>` + a keep-5 lifecycle policy.
+3. IAM role `shiny-app-<key>-task`, always inside the boundary.
+4. `StartBuild` with `APP_KEY`, `ZIP_KEY`, `RELEASE_TAG`, `ECR_REPO_URI` and
+   `PACKAGES` overrides; the row records the build id. Those five plus
+   `UPLOADS_BUCKET` — static on the project, one bucket for every app — are
+   exactly `buildspec/render.py`'s `REQUIRED` tuple, and a missing one fails
+   the build in `pre_build` naming the variable. `ECR_REPO_URI` is the
+   repository step 2 just made, which is why step 2 comes first.
+5. On success (detected by **polling in the sleeper loop**, not a webhook):
+   register the task definition, create the ECS service at **desired 0** —
+   nobody has opened it yet, and the proxy wakes it like any other app — add
+   the host's callback and logout URL to the shared Cognito client, then flip
+   the row to `active`.
+
+**On any failure after step 1** the row goes to `build_failed` with the
+reason recorded, and whatever exists is **left in place for inspection**
+rather than thrashing. A retry reuses it; deleting it is P2b.
+
+**Nothing stays "building" forever.** The sleeper loop hands every `building`
+row to the build watcher once a minute, and a build that has not finished
+45 minutes after it started — or a row that never got a build id at all, or
+one whose build CodeBuild can no longer describe — is reaped to
+`build_failed`. Audit events: `app_created`, `build_started`,
+`build_succeeded`, `build_failed`, `provision_failed`, each carrying the
+creator's email, none of them ever deduplicated.
+
+**Hostnames are policed** in three layers, in order: shape (3–30 chars,
+lowercase `a-z0-9-`, no leading/trailing/double hyphen), a reserved list
+(`www`, `api`, `auth`, `admin`, `proxy`, `shinyplatform`, `dashboards`,
+`portal`, `mail`, plus every existing row's key **and** host label), and
+substring matching against `__config__.key_denylist`. A denylist rejection
+never says which term matched — the list is who Stratevi works with and on
+what, and a wizard that plays hot-and-cold with it is a disclosure oracle.
+An unreadable denylist reports "temporarily unavailable" rather than
+"nothing matched": a name that reaches DNS cannot be taken back.
+
+**`expires_at` must be explicitly present on create.** `null` means never
+and is accepted; *absent* is a 400. An app that quietly lives forever
+because a field was omitted is how a client demo becomes permanent
+infrastructure.
+
+**The API never proxies bytes.** `POST /uploads` checks the declared size
+against the 100 MB cap *before* issuing anything, then returns a 15-minute
+presigned PUT for `uploads/<uuid>.zip`. Only Bucket and Key are signed —
+signing `ContentLength` would let S3 enforce the size, at the cost of an
+opaque 403-as-CORS-error whenever the browser's byte count differs. The
+build validates the bundle for real. On create, `upload_key` is re-checked
+against the shape this service issues, so a caller cannot point the build at
+some other object in the bucket.
+
+### The permissions boundary — the one genuinely sensitive part
+
+A service that can call `iam:CreateRole` is a privilege-escalation engine
+unless it is fenced. The fence is the Terraform-owned `shiny-app-boundary`
+policy, and it only works if **every** role carries it. Four independent
+things make a role without it impossible, none of them a convention a future
+edit can quietly drop:
+
+1. `APP_ROLE_BOUNDARY_ARN` is in the **required** creation env, so with no
+   boundary there is no creation at all.
+2. `provision.Boto3TaskRoles.__init__` **raises** on a blank ARN — the object
+   that creates roles cannot exist without one.
+3. `ensure(app_key)` takes **no boundary parameter**. There is nothing for a
+   caller to pass wrongly, pass as `None`, or forget.
+4. After creating, the role is **read back** and the attached boundary
+   compared; a mismatch deletes the role and raises. Even an IAM that
+   accepted the call and ignored the parameter cannot leave an unbounded
+   `shiny-app-*` role in the account. An *existing* role is reused only if it
+   passes the same check.
+
+### The Cognito call — read this before touching it
+
+`UpdateUserPoolClient` is a **replace, not a patch**. Send it `CallbackURLs`
+alone and Cognito resets `AllowedOAuthFlows`, `AllowedOAuthScopes`,
+`SupportedIdentityProviders`, `ExplicitAuthFlows` and every token validity to
+their defaults — and because this is the one shared client the ALB
+authenticates every app against, that means the whole platform stops signing
+anyone in. It fails **silently**: the API returns 200.
+
+So the call is Describe → carry every field forward except the three
+`Describe`-only ones (`ClientSecret`, `LastModifiedDate`, `CreationDate`) →
+Update → **Describe again and verify no previously-present callback URL
+vanished**. The merge is a pure function (`provision.merged_client_config`)
+tested against a full, realistic client config for exactly this reason. It is
+also the **last** provisioning step, because it is the only one that mutates
+state shared with every other app.
 
 **The bundle.** `PORTAL_DIST` (default `/app/portal-dist`, created empty by
 the Dockerfile) holds the Vite output. `/assets/*` is served with a one-year
@@ -253,6 +408,28 @@ minute; there is no partition key to Query on).
 probes with a GetItem against the sentinel key `__readyz__` instead, so
 readiness does not widen the policy.
 
+**P2a creation adds**, each narrowly scoped (and only needed once the
+creation env is set):
+
+- `s3:PutObject` on the uploads bucket — a presigned URL carries the
+  *signer's* permissions, so the browser's PUT fails without this even
+  though the service makes no S3 call.
+- `codebuild:StartBuild`, `codebuild:BatchGetBuilds` on the one project.
+- `logs:GetLogEvents` on the CodeBuild log group — the build screen's tail.
+- `ecr:CreateRepository`, `ecr:DescribeRepositories`, `ecr:PutLifecyclePolicy`,
+  `ecr:TagResource` on `shiny-*`.
+- `ecs:RegisterTaskDefinition` (no resource scoping is possible),
+  `ecs:CreateService` on the cluster.
+- `iam:CreateRole`, `iam:PutRolePolicy`, `iam:TagRole`, `iam:GetRole`,
+  `iam:DeleteRole` on `role/shiny-app-*` **only** with
+  `iam:PermissionsBoundary` equal to the boundary policy. `GetRole` and
+  `DeleteRole` are what invariant 4 above is made of — without them the
+  read-back verification cannot run.
+- `iam:PassRole` on `role/shiny-app-*` and on the app execution role, to
+  `ecs-tasks.amazonaws.com`.
+- `cognito-idp:DescribeUserPoolClient`, `cognito-idp:UpdateUserPoolClient`
+  on the one shared client. Describe is not optional — see above.
+
 `seed.py` needs `dynamodb:PutItem` on the apps table, run from a human's
 credentials, not the task role.
 
@@ -277,12 +454,33 @@ credentials, not the task role.
 | `max_session_hours` | N | optional; 0/absent means uncapped. Hard ceiling on continuous awake time — see "The force-sleep cap" below |
 | `awake_since` | N | epoch seconds, optional; 0/absent means not currently tracked awake. Set when the proxy wakes the app or when the sleeper first observes it running; cleared once the service is observed at 0 |
 
+P2a adds, on portal-created rows only (a row seeded before P2a has none of
+them, which is exactly what a hand-provisioned app should look like):
+
+| Attribute | Type | Notes |
+|---|---|---|
+| `status` | S | also `building` / `build_failed`. `access.decide` refuses both — an unrecognised status is a 403, which is the right answer for a host whose container does not exist |
+| `cpu`, `memory` | N | the chosen Fargate size; kept on the row because the task definition is not registered until the build succeeds |
+| `packages` | SS | the confirmed R package list, so a rebuild is reproducible |
+| `upload_key` | S | `uploads/<uuid>.zip`, the build's input |
+| `release_tag` | S | `r1`; P2b's version history hangs off this |
+| `image` | S | full ECR image URI including the tag |
+| `build_id` | S | CodeBuild build id, polled by the sleeper loop |
+| `build_started_at` | N | epoch seconds; what the 45-minute reaper measures |
+| `build_error` | S | why the last build or provisioning step failed |
+| `created_by`, `created_at` | S, N | who asked for it and when |
+
+Only `status`, `build_id`, `build_started_at`, `build_error` and `image` are
+ever rewritten. What a build was *made from* — key, size, packages, upload —
+is written once by the conditional put and is not patchable by anything,
+including the admin API.
+
 `shiny-proxy-audit` — PK `host` (S), SK `ts` (S), TTL attribute `ttl`:
 
 | Attribute | Type | Notes |
 |---|---|---|
 | `ts` | S | `<13-digit epoch ms>#<8 hex>` — sortable, collision-proof across tasks |
-| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` / `force_sleep` / `config_change` |
+| `event` | S | `allow` / `deny` / `wake` / `sleep` / `expired` / `force_sleep` / `config_change` / `app_created` / `build_started` / `build_succeeded` / `build_failed` / `provision_failed` |
 | `email`, `path`, `outcome` | S | present when known |
 | `ts_epoch` | N | seconds, for humans reading the console |
 | `ttl` | N | 90 days after the event |

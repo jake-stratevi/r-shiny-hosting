@@ -1,0 +1,273 @@
+# ---------------------------------------------------------------------------
+# shiny-app-build — CodeBuild buildspec for the P2a self-service image pipeline
+# docs/design/portal-p2a.md, "The build"
+#
+#   zip in S3  ->  validate  ->  render Dockerfile  ->  docker build  ->  ECR
+#
+# Image:    aws/codebuild/standard:7.0, privileged (it builds images)
+# Compute:  general1.small (~$0.005/min; a 15-minute R build is ~$0.08)
+# Timeout:  30 minutes. First builds take 10-20; installing R packages is the
+#           slow part and there is no cache shared between apps.
+#
+# Every input arrives as an environment-variable override on StartBuild. The
+# full contract is in README.md next to this file and is enforced by render.py,
+# so a missing or malformed variable fails in pre_build with a message naming
+# the variable rather than as an opaque error twelve minutes in.
+#
+#   Required: APP_KEY ZIP_KEY RELEASE_TAG UPLOADS_BUCKET ECR_REPO_URI PACKAGES
+#   Optional: R_VERSION P3M_SNAPSHOT P3M_DISTRO EXTRA_SYSTEM_PACKAGES
+#             PIPELINE_PREFIX PUSH_LATEST TARGET_PLATFORM SMOKE_TEST
+# ---------------------------------------------------------------------------
+version: 0.2
+
+env:
+  variables:
+    # Defaults only. StartBuild's environmentVariablesOverride wins.
+    R_VERSION: "4.4.1"
+    P3M_SNAPSHOT: "2026-05-01"
+    P3M_DISTRO: "jammy"
+    EXTRA_SYSTEM_PACKAGES: ""
+    # Where Terraform mirrors this directory's helper files inside the uploads
+    # bucket, for the case where the project has no source checkout.
+    PIPELINE_PREFIX: "_pipeline/"
+    PUSH_LATEST: "true"
+    TARGET_PLATFORM: "linux/amd64"
+    SMOKE_TEST: "true"
+    DOCKER_BUILDKIT: "1"
+    WORK: "/tmp/shiny-build"
+  exported-variables:
+    # Readable by the portal via codebuild:BatchGetBuilds ->
+    # build.exportedEnvironmentVariables, so it need not parse logs.
+    - IMAGE_URI
+    - IMAGE_DIGEST
+    - RELEASE_TAG
+    - APP_KEY
+    - BUILD_RESULT
+    - BUILD_ERROR
+
+phases:
+  pre_build:
+    commands:
+      # --- bootstrap: define the failure path before anything can fail -----
+      - |
+        set -euo pipefail
+        mkdir -p "$WORK"
+        cat > "$WORK/lib.sh" <<'LIB'
+        # One parseable line on every exit path. The marker prefix keeps it
+        # findable in a log tail.
+        emit() {
+          printf 'SHINY_BUILD_RESULT %s\n' "$(python3 - "$@" <<'PY'
+        import json, os, sys
+        print(json.dumps({
+            "result": "succeeded" if sys.argv[1] == "ok" else "failed",
+            "app_key": os.environ.get("APP_KEY", ""),
+            "release_tag": os.environ.get("RELEASE_TAG", ""),
+            "image_uri": os.environ.get("IMAGE_URI", ""),
+            "image_digest": os.environ.get("IMAGE_DIGEST", ""),
+            "build_id": os.environ.get("CODEBUILD_BUILD_ID", ""),
+            "phase": sys.argv[2] if len(sys.argv) > 2 else "",
+            "error": sys.argv[3] if len(sys.argv) > 3 else "",
+        }, separators=(",", ":")))
+        PY
+        )"
+        }
+        # die <phase> <message...> — loud, specific, and always the last thing
+        # this build does.
+        die() {
+          phase="$1"; shift
+          echo "BUILD FAILED [$phase]: $*" >&2
+          export BUILD_RESULT="failed"
+          export BUILD_ERROR="$*"
+          emit fail "$phase" "$*"
+          exit 1
+        }
+        LIB
+        . "$WORK/lib.sh"
+        export BUILD_RESULT="running"
+        echo "--- workspace $WORK"
+
+      # --- pipeline assets --------------------------------------------------
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"
+        echo "--- locating pipeline assets"
+        # Two supported CodeBuild source shapes, so this file works whichever
+        # the Terraform stack chose:
+        #   1. a source checkout of this repo  -> the helpers sit next to us
+        #   2. NO_SOURCE + inline buildspec    -> Terraform mirrors
+        #      Dockerfile.template / validate.py / render.py into
+        #      s3://$UPLOADS_BUCKET/$PIPELINE_PREFIX
+        ASSETS=""
+        for d in "${CODEBUILD_SRC_DIR:-}/proxy-app/buildspec" "${CODEBUILD_SRC_DIR:-}"; do
+          if [ -n "$d" ] && [ -f "$d/Dockerfile.template" ] && [ -f "$d/validate.py" ] && [ -f "$d/render.py" ]; then
+            ASSETS="$d"
+            break
+          fi
+        done
+        if [ -z "$ASSETS" ]; then
+          ASSETS="$WORK/assets"
+          mkdir -p "$ASSETS"
+          if [ -z "${UPLOADS_BUCKET:-}" ]; then
+            die pre_build "UPLOADS_BUCKET is not set and no source checkout was found"
+          fi
+          echo "no source checkout; pulling assets from s3://$UPLOADS_BUCKET/$PIPELINE_PREFIX"
+          for f in Dockerfile.template validate.py render.py; do
+            aws s3 cp "s3://$UPLOADS_BUCKET/${PIPELINE_PREFIX}$f" "$ASSETS/$f" --only-show-errors \
+              || die pre_build "pipeline asset missing: s3://$UPLOADS_BUCKET/${PIPELINE_PREFIX}$f — Terraform must mirror proxy-app/buildspec/ to that prefix, and the bucket's 7-day expiry rule must not cover it"
+          done
+        fi
+        echo "export ASSETS=\"$ASSETS\"" > "$WORK/env"
+        echo "using assets from $ASSETS"
+
+      # --- ECR login --------------------------------------------------------
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"
+        echo "--- ECR login"
+        # On Linux this pipe is correct. The CLAUDE.md gotcha about
+        # `aws ecr get-login-password | docker login` failing with a 400 is a
+        # PowerShell pipe-encoding problem and does NOT apply in CodeBuild.
+        # Do not "fix" this into a temp file.
+        if [ -z "${ECR_REPO_URI:-}" ]; then die pre_build "ECR_REPO_URI is not set"; fi
+        REGISTRY="${ECR_REPO_URI%%/*}"
+        REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-east-1}}"
+        aws ecr get-login-password --region "$REGION" \
+          | docker login --username AWS --password-stdin "$REGISTRY" \
+          || die pre_build "docker login to $REGISTRY failed"
+
+      # --- download the bundle ---------------------------------------------
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"
+        echo "--- downloading bundle"
+        if [ -z "${UPLOADS_BUCKET:-}" ]; then die pre_build "UPLOADS_BUCKET is not set"; fi
+        if [ -z "${ZIP_KEY:-}" ]; then die pre_build "ZIP_KEY is not set"; fi
+        aws s3 cp "s3://$UPLOADS_BUCKET/$ZIP_KEY" "$WORK/bundle.zip" --only-show-errors \
+          || die pre_build "could not download the upload s3://$UPLOADS_BUCKET/$ZIP_KEY — the uploads bucket expires objects after 7 days, so a retry of an old build needs a fresh upload"
+        ls -l "$WORK/bundle.zip"
+
+      # --- validate and extract --------------------------------------------
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"; . "$WORK/env"
+        echo "--- validating bundle"
+        # Rejects zip-slip, symlinks, >5000 entries and >250 MB extracted, and
+        # requires an entrypoint; flattens a single wrapper directory. The
+        # script extracts the archive itself instead of shelling out to unzip,
+        # so there is no check-then-extract race.
+        if ! python3 "$ASSETS/validate.py" \
+               --zip "$WORK/bundle.zip" \
+               --dest "$WORK/app" \
+               --json-out "$WORK/validate.json"; then
+          ERR="$(python3 - "$WORK/validate.json" <<'PY'
+        import json, sys
+        try:
+            print(json.load(open(sys.argv[1])).get("error", "bundle rejected"))
+        except Exception:
+            print("bundle rejected")
+        PY
+        )"
+          die pre_build "$ERR"
+        fi
+        cat "$WORK/validate.json"; echo
+
+      # --- render the Dockerfile -------------------------------------------
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"; . "$WORK/env"
+        echo "--- rendering Dockerfile"
+        # Written OUTSIDE the build context on purpose: an uploaded bundle may
+        # legitimately contain its own Dockerfile, which must be copied in as
+        # an inert file rather than overwritten or used.
+        mkdir -p "$WORK/render"
+        python3 "$ASSETS/render.py" \
+            --template "$ASSETS/Dockerfile.template" \
+            --out "$WORK/render/Dockerfile" \
+            --json-out "$WORK/render.json" \
+            --packages-out "$WORK/packages.txt" \
+          || die pre_build "invalid build configuration — see the CONFIG ERROR line above"
+        echo "----- rendered Dockerfile -----"
+        cat "$WORK/render/Dockerfile"
+        echo "-------------------------------"
+
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"; . "$WORK/env"
+        echo "--- docker build (10-20 minutes on a first build; R packages are the slow part)"
+        export IMAGE_URI="$ECR_REPO_URI:$RELEASE_TAG"
+        echo "export IMAGE_URI=\"$IMAGE_URI\"" >> "$WORK/env"
+        R_PACKAGES="$(cat "$WORK/packages.txt")"
+        # The --build-arg values duplicate the defaults render.py already baked
+        # into the Dockerfile. Both, on purpose: the rendered file stays a
+        # standalone reproducible record, and the flags stay the documented
+        # override path.
+        docker build \
+            --platform "$TARGET_PLATFORM" \
+            --progress plain \
+            -f "$WORK/render/Dockerfile" \
+            --build-arg "R_VERSION=$R_VERSION" \
+            --build-arg "P3M_SNAPSHOT=$P3M_SNAPSHOT" \
+            --build-arg "P3M_DISTRO=$P3M_DISTRO" \
+            --build-arg "R_PACKAGES=$R_PACKAGES" \
+            --build-arg "APP_SLUG=$APP_KEY" \
+            --build-arg "RELEASE_TAG=$RELEASE_TAG" \
+            --build-arg "BUILD_ID=${CODEBUILD_BUILD_ID:-local}" \
+            -t "$IMAGE_URI" \
+            "$WORK/app" \
+          || die build "docker build failed — the last ERROR line above names the cause; a declared R package that would not install is the usual one"
+        if [ "$PUSH_LATEST" = "true" ]; then
+          docker tag "$IMAGE_URI" "$ECR_REPO_URI:latest"
+        fi
+        docker image inspect "$IMAGE_URI" --format 'built {{.Id}}, {{.Size}} bytes'
+
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"; . "$WORK/env"
+        if [ "$SMOKE_TEST" != "true" ]; then echo "--- smoke test skipped"; exit 0; fi
+        echo "--- smoke test: does the image start and serve?"
+        # Catches the failure that matters most here — an image that builds
+        # cleanly and then dies on startup because the app calls library() on
+        # something nobody declared, or reads a data file that was not zipped.
+        CID="$(docker run -d -p 13838:3838 -e SHINY_CPU_WORKERS=1 "$IMAGE_URI")"
+        ok=0
+        for _ in $(seq 1 60); do
+          if curl -fsS -o /dev/null "http://127.0.0.1:13838/"; then ok=1; break; fi
+          sleep 2
+        done
+        if [ "$ok" -ne 1 ]; then
+          echo "----- container logs -----" >&2
+          docker logs "$CID" 2>&1 | tail -n 80 >&2
+          docker rm -f "$CID" >/dev/null 2>&1 || true
+          die build "the image built but the app did not serve HTTP on port 3838 within 120s — the container log is above"
+        fi
+        docker rm -f "$CID" >/dev/null 2>&1 || true
+        echo "smoke test passed"
+
+  post_build:
+    commands:
+      - |
+        set -euo pipefail
+        . "$WORK/lib.sh"
+        if [ -f "$WORK/env" ]; then . "$WORK/env"; fi
+        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" != "1" ]; then
+          # An earlier phase's die() already emitted a specific line; this is
+          # the backstop for anything that failed without one.
+          export BUILD_RESULT="failed"
+          export BUILD_ERROR="${BUILD_ERROR:-build did not reach post_build successfully}"
+          emit fail post_build "$BUILD_ERROR"
+          exit 1
+        fi
+        echo "--- pushing"
+        docker push "$IMAGE_URI" \
+          || die post_build "docker push $IMAGE_URI failed — check that the ECR repository shiny-$APP_KEY exists and that the build role's ecr:* grant covers it"
+        if [ "$PUSH_LATEST" = "true" ]; then
+          docker push "$ECR_REPO_URI:latest" || die post_build "docker push $ECR_REPO_URI:latest failed"
+        fi
+        # Best effort: an empty digest is worth reporting, not worth failing a
+        # pushed image over.
+        export IMAGE_DIGEST="$(docker image inspect "$IMAGE_URI" --format '{{index .RepoDigests 0}}' 2>/dev/null | awk -F@ '{print $2}' || true)"
+        export BUILD_RESULT="succeeded"
+        export BUILD_ERROR=""
+        emit ok post_build

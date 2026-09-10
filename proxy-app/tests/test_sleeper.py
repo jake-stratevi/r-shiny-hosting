@@ -437,3 +437,112 @@ async def test_a_config_row_with_an_expiry_is_not_expired_either():
     assert store.statuses == []
     assert scaler.slept == []
     assert recorder.events == []
+
+
+# --- P2a: building rows go to the build watcher, never to ECS --------------
+
+
+class FakeSweeper:
+    def __init__(self) -> None:
+        self.swept: list[tuple[str, float]] = []
+
+    async def sweep(self, app: App, now: float) -> None:
+        self.swept.append((app.host, now))
+
+
+def building(**overrides) -> App:
+    defaults = dict(
+        host="tarpeyo.tools.stratevi.com",
+        app_key="tarpeyo",
+        ecs_service="shiny-tarpeyo",
+        status=registry.STATUS_BUILDING,
+        build_id="shiny-app-build:abc-123",
+        build_started_at=int(NOW - 60),
+    )
+    defaults.update(overrides)
+    return App.create(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_a_building_row_is_handed_to_the_build_watcher():
+    """This is where the 45-minute reaper actually runs: the sleeper loop is
+    already ticking once a minute, so the build poll rides on it rather than
+    needing a webhook with a public endpoint of its own."""
+    store = FakeStore([building()])
+    scaler = FakeScaler()
+    sweeper_ = FakeSweeper()
+    loop = sleeper.Loop(
+        store, scaler, FakeActivity(), FakeRecorder(), clock=lambda: NOW,
+        builds=sweeper_,
+    )
+
+    await loop.tick()
+
+    assert sweeper_.swept == [("tarpeyo.tools.stratevi.com", NOW)]
+
+
+@pytest.mark.asyncio
+async def test_a_building_row_is_never_described_or_scaled():
+    """There is no ECS service yet. Describing one would be an error a
+    minute, forever."""
+    store = FakeStore([building(idle_minutes=1)])
+    scaler = FakeScaler()
+    loop = sleeper.Loop(
+        store, scaler, FakeActivity(last={"tarpeyo.tools.stratevi.com": NOW - 99999}),
+        FakeRecorder(), clock=lambda: NOW, builds=FakeSweeper(),
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == []
+    assert store.awake_since_writes == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_build_row_is_left_entirely_alone():
+    """`build_failed` is terminal until somebody retries or deletes it."""
+    store = FakeStore([building(status=registry.STATUS_BUILD_FAILED)])
+    scaler = FakeScaler()
+    sweeper_ = FakeSweeper()
+    loop = sleeper.Loop(
+        store, scaler, FakeActivity(), FakeRecorder(), clock=lambda: NOW,
+        builds=sweeper_,
+    )
+
+    await loop.tick()
+
+    assert sweeper_.swept == []
+    assert scaler.slept == []
+
+
+@pytest.mark.asyncio
+async def test_a_building_row_with_no_watcher_configured_does_not_break_the_pass():
+    """Creation env removed from under a live row. Loud in the log, but the
+    other apps still get slept."""
+    store = FakeStore([building(), row(idle_minutes=15)])
+    scaler = FakeScaler()
+    loop, recorder = loop_for(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 3600})
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == ["shiny-model"]
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_that_raises_does_not_stop_the_rest_of_the_pass():
+    class Broken:
+        async def sweep(self, app, now):
+            raise RuntimeError("codebuild is unhappy")
+
+    store = FakeStore([building(), row(idle_minutes=15)])
+    scaler = FakeScaler()
+    loop = sleeper.Loop(
+        store, scaler, FakeActivity(last={"model.tools.stratevi.com": NOW - 3600}),
+        FakeRecorder(), clock=lambda: NOW, builds=Broken(),
+    )
+
+    await loop.tick()
+
+    assert scaler.slept == ["shiny-model"]

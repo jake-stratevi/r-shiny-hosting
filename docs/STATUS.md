@@ -95,20 +95,15 @@ hostname (and retiring portal/ + catalog.yaml) is the next small step. P2
 (creation wizard + provisioning) and P2.5 (user management against the new
 pool) are specced in docs/design/portal.md.
 
-## Pending, half-done
-
-**The ADR-0013 Lambda portal retirement is staged but not applied.** The
-proxy's shared Cognito client already accepts the
-`dashboards.tools.stratevi.com` callback, and a reviewed destroy plan for
-the `portal/` stack (11 resources, incl. listener rule 50, the Lambda, and
-its old Hub-pool client) is saved at `portal/retire.tfplan`. Until it is
-applied, rule 50 still wins and that hostname still serves the OLD Lambda
-menu. Apply it with `terraform apply -input=false retire.tfplan` from
-`portal/`; the wildcard DNS record already covers the hostname, so removing
-the stack's own A-record causes no gap. **Afterwards:** delete the repo-root
-`catalog.yaml` (nothing reads it once that Lambda is gone — `seed.py` takes
-`--catalog` and fails loudly rather than silently), and confirm
-dashboards.tools.stratevi.com serves the React portal.
+**ADR-0013 Lambda portal: retired 2026-09-10.** The `portal/` stack is
+destroyed (11 resources, incl. listener rule 50 and its stale client in the
+old Hub pool) and `catalog.yaml` is deleted. `dashboards.tools.stratevi.com`
+now resolves through the wildcard record to the catch-all rule and is served
+by the React portal — verified: it redirects to the new pool with the shared
+client and a valid `state`. Entitlements live in exactly one place now
+(`shiny-proxy-apps`); the two-hand-synced-lists problem is closed. The
+`portal/` directory can be deleted from the repo at any time; its state file
+in S3 is empty.
 
 ## Broken right now
 

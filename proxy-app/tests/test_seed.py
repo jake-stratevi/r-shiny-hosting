@@ -1,12 +1,24 @@
-"""Seed parsing, driven against the real repo-root catalog.yaml.
+"""Seed parsing, driven against a synthetic catalog written to a temp dir.
 
-The catalog is the file a human edits at migration time, so the shape these
-tests assert is the shape that actually exists two directories up -- not a
-fixture that can drift away from it.
+These tests used to read the repo-root ``catalog.yaml``. That file is gone:
+ADR-0013's Lambda portal was retired and the catalog it fed went with it (see
+``docs/STATUS.md``), so a suite that reads it fails at collection time.
+
+``seed.py`` itself stays and is unchanged. It takes ``--catalog``, it still
+has to turn a catalog into rows correctly, and it fails loudly with a legible
+message when the file is absent -- which is the behaviour a migration tool
+should have. What changed is only where the tests get their input.
+
+:data:`CATALOG_DOCUMENT` deliberately mirrors the shape of the retired file --
+two apps, ``users`` mode, the Entra-federated aliases, labels and
+descriptions, no ``max_session_hours`` -- because that shape is what the
+parser was written against and the coverage is worth keeping. It is a fixture
+now rather than a fact about the repository.
 """
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -15,24 +27,89 @@ import yaml
 import seed
 from proxy_app import registry
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-CATALOG = REPO_ROOT / "catalog.yaml"
+#: The retired repo-root catalog's structure, as a fixture. Two apps, both in
+#: `users` mode, each carrying the Microsoft365/Entra alias of the same person
+#: alongside the native Cognito address -- Cognito hands back a different
+#: email per identity provider, and dropping either one refuses that sign-in
+#: path.
+CATALOG_DOCUMENT = {
+    "apps": [
+        {
+            "key": "dashboard",
+            "label": "Treatment Pathway Dashboard",
+            "description": (
+                "Sankey diagram of treatment sequences after 2022 Tarpeyo "
+                "initiation."
+            ),
+            "url": "https://dashboard.tools.stratevi.com",
+            "access_mode": "users",
+            "allowed_emails": [
+                "jake@stratevi.com",
+                "jake.pistotnik@assembledintelligence.co.uk",
+                "nick@stratevi.com",
+                "nick.adair@assembledintelligence.co.uk",
+                "yi@stratevi.com",
+                "yi.pan@assembledintelligence.co.uk",
+                "josh@stratevi.com",
+                "josh.epstein@assembledintelligence.co.uk",
+            ],
+        },
+        {
+            "key": "model",
+            "label": "Microsimulation Model",
+            "description": "Patient-level microsimulation across four treatment passes.",
+            "url": "https://model.tools.stratevi.com",
+            "access_mode": "users",
+            "allowed_emails": [
+                "jake@stratevi.com",
+                "jake.pistotnik@assembledintelligence.co.uk",
+            ],
+        },
+    ]
+}
 
 
 @pytest.fixture(scope="module")
-def catalog() -> dict:
-    return seed.load_catalog(CATALOG)
+def workspace():
+    """A scratch directory.
+
+    ``tempfile`` rather than pytest's ``tmp_path``, for the same reason
+    ``test_portal.py`` says: this repo's Windows machine has an unreadable
+    ``pytest-of-<user>`` left in %TEMP% and the tmp_path fixture cannot get
+    past it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        # .resolve(): %TEMP% on this machine is an 8.3 short path
+        # ("JAKEPI~1"), and resolve_catalog resolves what it returns, so
+        # comparing an unresolved path against it fails on spelling alone.
+        yield Path(directory).resolve()
 
 
-# --- the real catalog ------------------------------------------------------
+@pytest.fixture(scope="module")
+def catalog_file(workspace) -> Path:
+    """CATALOG_DOCUMENT on disk, as YAML, exactly as a human would edit it."""
+    path = workspace / "catalog.yaml"
+    path.write_text(
+        yaml.safe_dump(CATALOG_DOCUMENT, sort_keys=False), encoding="utf-8"
+    )
+    return path
 
 
-def test_the_repo_catalog_is_where_the_tool_expects_it():
-    assert CATALOG.is_file(), f"expected the repo-root catalog at {CATALOG}"
-    assert seed.resolve_catalog(None, start=Path(__file__).parent) == CATALOG
+@pytest.fixture(scope="module")
+def catalog(catalog_file) -> dict:
+    return seed.load_catalog(catalog_file)
 
 
-def test_the_real_catalog_seeds_cleanly(catalog):
+# --- a whole catalog -------------------------------------------------------
+
+
+def test_a_catalog_round_trips_through_the_loader(catalog):
+    """load_catalog reads YAML off disk, so parse it rather than passing the
+    dict straight in -- a YAML-shaped bug would otherwise never show."""
+    assert catalog == CATALOG_DOCUMENT
+
+
+def test_a_two_app_catalog_seeds_cleanly(catalog):
     apps = seed.apps_from_catalog(catalog)
     by_key = {app.app_key: app for app in apps}
 
@@ -47,7 +124,7 @@ def test_the_real_catalog_seeds_cleanly(catalog):
     assert model.access_mode == registry.MODE_USERS
     assert "jake@stratevi.com" in model.allowed_emails
     # The Entra-federated alias for the same person must survive the parse --
-    # dropping it refuses that sign-in path (see catalog.yaml's own comment).
+    # dropping it refuses that sign-in path.
     assert "jake.pistotnik@assembledintelligence.co.uk" in model.allowed_emails
     assert model.expires_at == 0
 
@@ -74,14 +151,40 @@ def test_dry_run_renders_the_wire_shape_of_every_item(catalog):
     assert '"SS"' in rendered
 
 
-def test_the_migrate_model_first_case_is_a_single_deliberate_item(catalog):
-    """The design spec migrates `model` first -- it is currently a dead link."""
+def test_a_single_app_migration_is_one_deliberate_item(catalog):
+    """Apps move behind the proxy one at a time, so `--only` has to produce
+    exactly one complete row and nothing else."""
     apps = seed.apps_from_catalog(catalog, only="model")
     item = registry.app_item(apps[0])
     assert item["host"] == {"S": "model.tools.stratevi.com"}
     assert item["ecs_service"] == {"S": "shiny-model"}
     assert item["status"] == {"S": "active"}
     assert item["access_mode"] == {"S": "users"}
+
+
+# --- finding the file ------------------------------------------------------
+
+
+def test_an_explicit_catalog_path_is_used_as_given(workspace):
+    given = workspace / "elsewhere.yaml"
+    assert seed.resolve_catalog(str(given)) == given
+
+
+def test_the_nearest_catalog_at_or_above_the_directory_is_found(catalog_file):
+    """The tool is run from proxy-app/ as often as from a repo root, so it
+    walks up rather than making the caller count '../'s."""
+    nested = catalog_file.parent / "a" / "b"
+    nested.mkdir(parents=True, exist_ok=True)
+    assert seed.resolve_catalog(None, start=nested) == catalog_file
+    assert seed.resolve_catalog("", start=catalog_file.parent) == catalog_file
+
+
+def test_no_catalog_anywhere_is_a_legible_error():
+    """Its own temp tree: `workspace` has a catalog.yaml at its root, which
+    the walk-up would find."""
+    with tempfile.TemporaryDirectory() as directory:
+        with pytest.raises(seed.SeedError, match="pass --catalog"):
+            seed.resolve_catalog(None, start=Path(directory))
 
 
 # --- host derivation -------------------------------------------------------
@@ -231,10 +334,9 @@ def test_dry_run_shows_max_session_hours_when_the_catalog_sets_it():
     assert '"N": "8"' in rendered
 
 
-def test_the_real_catalog_has_no_session_cap_so_dry_run_omits_the_attribute(catalog):
-    """catalog.yaml does not (yet) set max_session_hours for either app --
-    confirms the key stays truly optional rather than silently defaulting to
-    something nonzero."""
+def test_a_catalog_with_no_session_cap_omits_the_attribute_entirely(catalog):
+    """Neither app sets max_session_hours -- confirms the key stays truly
+    optional rather than silently defaulting to something nonzero."""
     rendered = seed.render_items(seed.apps_from_catalog(catalog))
     assert "max_session_hours" not in rendered
 
@@ -255,8 +357,10 @@ def test_table_is_required():
         seed.build_parser().parse_args(["--dry-run"])
 
 
-def test_dry_run_writes_nothing_and_exits_zero(capsys):
-    code = seed.main(["--table", "shiny-proxy-apps", "--catalog", str(CATALOG), "--dry-run"])
+def test_dry_run_writes_nothing_and_exits_zero(capsys, catalog_file):
+    code = seed.main(
+        ["--table", "shiny-proxy-apps", "--catalog", str(catalog_file), "--dry-run"]
+    )
     out = capsys.readouterr().out
     assert code == 0
     assert "dry run: 2 item(s)" in out
@@ -278,26 +382,27 @@ def test_an_empty_catalog_writes_nothing_rather_than_succeeding_silently():
         seed.apps_from_catalog({"apps": []})
 
 
-def test_a_missing_catalog_file_is_reported_not_raised(capsys):
+def test_a_missing_catalog_file_is_reported_not_raised(capsys, workspace):
+    """The repo-root catalog.yaml is gone (ADR-0013's portal was retired), so
+    this is now the ordinary case rather than an edge one: the tool must say
+    so on stderr and exit 1, not traceback."""
     code = seed.main(
-        ["--table", "t", "--catalog", str(REPO_ROOT / "no-such-catalog.yaml"), "--dry-run"]
+        [
+            "--table",
+            "t",
+            "--catalog",
+            str(workspace / "no-such-catalog.yaml"),
+            "--dry-run",
+        ]
     )
     assert code == 1
     assert "seed:" in capsys.readouterr().err
 
 
-def test_the_catalog_yaml_the_portal_reads_and_the_seed_reads_are_the_same_file(catalog):
-    """catalog.yaml drives both the portal menu and these rows (ADR-0013)."""
-    raw = yaml.safe_load(CATALOG.read_text(encoding="utf-8"))
-    assert raw == catalog
-    for entry in raw["apps"]:
-        assert {"key", "label", "description", "url", "access_mode"} <= set(entry)
-
-
 # --- label and description (the portal's menu reads these off the row) -----
 
 
-def test_the_real_catalog_carries_its_labels_and_descriptions_onto_the_rows(catalog):
+def test_a_catalog_carries_its_labels_and_descriptions_onto_the_rows(catalog):
     """ADR-0014 retires catalog.yaml, so the migration has to carry the tile
     text across or every menu entry loses its name the day the Lambda portal
     is switched off."""

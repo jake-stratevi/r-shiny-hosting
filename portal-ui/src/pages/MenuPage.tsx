@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { api } from '../api/client'
 import type { MenuApp } from '../api/types'
 import { Monogram } from '../components/Monogram'
@@ -58,8 +59,8 @@ export function MenuPage() {
           {apps.map((app) => (
             <MenuTile key={app.host} app={app} />
           ))}
-          {/* Admins get the shape of P2 without a stub route behind it. */}
-          {me?.is_admin ? <NewAppTile /> : null}
+          {/* Creation is its own permission — admin does not imply it. */}
+          {me?.can_create ? <NewAppTile /> : null}
         </ul>
       )}
     </>
@@ -124,29 +125,26 @@ function MenuTile({ app }: { app: MenuApp }) {
 }
 
 /**
- * Visible, deliberately inert. It sets the expectation that adding an app is
- * a portal job without inventing a route that 404s — the wizard is P2 (see
- * docs/design/portal.md).
+ * The door to the P2a wizard. Shown only to people the `__config__` row lists
+ * as creators — hidden, not disabled, for everyone else, so nobody is dangled
+ * an affordance that answers 403.
  */
 function NewAppTile() {
   return (
     <li>
-      <div
-        aria-disabled="true"
-        title="The app-creation wizard arrives in P2"
-        className="flex h-full min-h-[13rem] cursor-not-allowed flex-col items-center justify-center gap-2 rounded-card border border-dashed border-line bg-surface/50 p-5 text-center"
+      <Link
+        to="/admin/apps/new"
+        className="group flex h-full min-h-[13rem] flex-col items-center justify-center gap-2 rounded-card border border-dashed border-line bg-surface/50 p-5 text-center transition-colors hover:border-accent-line hover:bg-accent-soft/50"
       >
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas text-faint">
+        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-canvas text-faint transition-colors group-hover:bg-accent-soft group-hover:text-accent">
           <PlusIcon className="h-4 w-4" />
         </span>
-        <p className="text-sm font-medium text-muted">New app</p>
+        <p className="text-sm font-medium text-muted group-hover:text-accent">New app</p>
         <p className="max-w-[16rem] text-xs leading-relaxed text-faint">
-          Upload a Shiny app and get a private, protected link.
+          Upload a Shiny app and get a private, protected link. It builds in about
+          15 minutes.
         </p>
-        <span className="mt-1 rounded-full bg-canvas px-2 py-0.5 text-[11px] font-medium text-faint ring-1 ring-inset ring-line">
-          Coming in P2
-        </span>
-      </div>
+      </Link>
     </li>
   )
 }

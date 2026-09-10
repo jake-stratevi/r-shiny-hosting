@@ -19,6 +19,13 @@ from typing import Any, Callable, Iterable, Protocol, Sequence
 STATUS_ACTIVE = "active"
 STATUS_DISABLED = "disabled"
 STATUS_EXPIRED = "expired"
+#: P2a creation states. A row exists from the moment the slug is reserved --
+#: that reservation IS the mutex against two people creating the same
+#: hostname -- so there are two statuses for "this row is not an app you can
+#: reach yet". `access.decide` refuses both (an unrecognised status is a 403),
+#: which is the correct answer for a host whose container does not exist.
+STATUS_BUILDING = "building"
+STATUS_BUILD_FAILED = "build_failed"
 
 #: The proxy implements all_users and users. The remaining three are reserved
 #: by ADR-0014 so the schema does not change when the portal phase lands. An
@@ -54,7 +61,25 @@ CONFIG_PREFIX = "__"
 
 #: The one config row P1 defines: `admin_emails` (SS), managed as a Terraform
 #: aws_dynamodb_table_item so the admin list is code-reviewed (ADR-0014).
+#: P2a adds two more string sets to the SAME row: `creator_emails` (who may
+#: create apps -- deliberately NOT implied by admin, see portal-p2a.md) and
+#: `key_denylist` (substrings banned from public hostnames, editable without
+#: a deploy).
 CONFIG_HOST = "__config__"
+
+CONFIG_ADMIN_EMAILS = "admin_emails"
+CONFIG_CREATOR_EMAILS = "creator_emails"
+CONFIG_KEY_DENYLIST = "key_denylist"
+
+
+class HostTaken(Exception):
+    """The conditional put lost: something already owns that hostname.
+
+    Raised by :meth:`DynamoAppStore.reserve`. It is the ONLY thing standing
+    between two simultaneous wizards and two apps claiming one public
+    hostname, so it is an exception rather than a boolean -- a caller cannot
+    forget to check it.
+    """
 
 
 def is_config_host(host: str) -> bool:
@@ -128,6 +153,26 @@ class App:
     # (acceptable -- the wake page is one refresh away); money stops burning.
     max_session_hours: int = DEFAULT_MAX_SESSION_HOURS  # hours; 0/absent = uncapped
     awake_since: int = 0  # epoch seconds; 0 means "not currently tracked awake"
+    # --- P2a creation (portal-p2a.md) ---------------------------------------
+    # Everything below is written once by the creation wizard and read by the
+    # build watcher. A row seeded before P2a has none of it, which is exactly
+    # what a hand-provisioned app should look like: `status` is `active`,
+    # there is no build to poll, and the watcher never touches it.
+    #
+    # cpu/memory are kept on the row rather than only in the task definition
+    # because the task definition is registered AFTER the build succeeds --
+    # by then the wizard's answer has to have survived somewhere.
+    cpu: int = 0  # Fargate CPU units; 0 means "not portal-created"
+    memory: int = 0  # MiB
+    packages: tuple[str, ...] = field(default_factory=tuple)
+    upload_key: str = ""  # uploads/<uuid>.zip, the build's input
+    release_tag: str = ""  # r1, r2, ... -- P2b's version history hangs off this
+    image: str = ""  # full ECR image URI including the tag
+    build_id: str = ""  # CodeBuild build id, polled by the sleeper loop
+    build_started_at: int = 0  # epoch seconds; the 45-minute reaper reads this
+    build_error: str = ""  # why the last build or provisioning step failed
+    created_by: str = ""  # the creator's email, for the audit trail
+    created_at: int = 0  # epoch seconds
 
     @classmethod
     def create(
@@ -147,6 +192,17 @@ class App:
         last_active: int | None = None,
         max_session_hours: int | None = None,
         awake_since: int | None = None,
+        cpu: int | None = None,
+        memory: int | None = None,
+        packages: Iterable[str] | None = None,
+        upload_key: str = "",
+        release_tag: str = "",
+        image: str = "",
+        build_id: str = "",
+        build_started_at: int | None = None,
+        build_error: str = "",
+        created_by: str = "",
+        created_at: int | None = None,
     ) -> "App":
         """Build a row with defaults applied and comparisons pre-normalized."""
         return cls(
@@ -171,6 +227,21 @@ class App:
             # already 0.
             max_session_hours=int(max_session_hours or 0),
             awake_since=int(awake_since or 0),
+            cpu=int(cpu or 0),
+            memory=int(memory or 0),
+            # Package NAMES only, order preserved: the wizard confirmed this
+            # exact list and a rebuild has to reproduce it (portal-p2a.md).
+            packages=tuple(
+                cleaned for cleaned in (str(p).strip() for p in (packages or ())) if cleaned
+            ),
+            upload_key=(upload_key or "").strip(),
+            release_tag=(release_tag or "").strip(),
+            image=(image or "").strip(),
+            build_id=(build_id or "").strip(),
+            build_started_at=int(build_started_at or 0),
+            build_error=(build_error or "").strip(),
+            created_by=(created_by or "").strip().lower(),
+            created_at=int(created_at or 0),
         )
 
     def display_label(self) -> str:
@@ -316,6 +387,23 @@ class CachedRegistry:
         # stale answer the way app rows do.
         return await self._store.admin_emails()  # type: ignore[attr-defined]
 
+    async def creator_emails(self) -> tuple[str, ...]:
+        # Same reasoning as admin_emails: `portal.CreatorList` owns the cache.
+        return await self._store.creator_emails()  # type: ignore[attr-defined]
+
+    async def key_denylist(self) -> tuple[str, ...]:
+        return await self._store.key_denylist()  # type: ignore[attr-defined]
+
+    async def reserve(self, app: App) -> None:
+        # Invalidated after, not before: until the conditional put succeeds
+        # there is nothing new to see, and a cached MISS for this host is
+        # exactly what a concurrent request should keep seeing while the
+        # write is in flight.
+        try:
+            await self._store.reserve(app)  # type: ignore[attr-defined]
+        finally:
+            self.invalidate(app.host)
+
     async def ping(self) -> None:
         await self._store.ping()
 
@@ -356,6 +444,29 @@ def app_item(app: App) -> dict[str, dict[str, Any]]:
         item["max_session_hours"] = {"N": str(app.max_session_hours)}
     if app.awake_since:
         item["awake_since"] = {"N": str(app.awake_since)}
+    # P2a creation attributes. Same rule as everything above: absent rather
+    # than empty, so a hand-seeded row and a portal-created one that happens
+    # to be uncapped are byte-identical.
+    if app.packages:
+        item["packages"] = {"SS": list(app.packages)}
+    for name, text in (
+        ("upload_key", app.upload_key),
+        ("release_tag", app.release_tag),
+        ("image", app.image),
+        ("build_id", app.build_id),
+        ("build_error", app.build_error),
+        ("created_by", app.created_by),
+    ):
+        if text:
+            item[name] = {"S": text}
+    for name, number in (
+        ("cpu", app.cpu),
+        ("memory", app.memory),
+        ("build_started_at", app.build_started_at),
+        ("created_at", app.created_at),
+    ):
+        if number:
+            item[name] = {"N": str(number)}
     return item
 
 
@@ -376,6 +487,17 @@ def app_from_item(item: dict[str, dict[str, Any]]) -> App:
         last_active=_read_n(item, "last_active"),
         max_session_hours=_read_n(item, "max_session_hours"),
         awake_since=_read_n(item, "awake_since"),
+        cpu=_read_n(item, "cpu"),
+        memory=_read_n(item, "memory"),
+        packages=_read_strings(item, "packages"),
+        upload_key=_read_s(item, "upload_key"),
+        release_tag=_read_s(item, "release_tag"),
+        image=_read_s(item, "image"),
+        build_id=_read_s(item, "build_id"),
+        build_started_at=_read_n(item, "build_started_at"),
+        build_error=_read_s(item, "build_error"),
+        created_by=_read_s(item, "created_by"),
+        created_at=_read_n(item, "created_at"),
     )
 
 
@@ -451,6 +573,23 @@ PATCHABLE_ATTRIBUTES = (
     "status",
 )
 
+#: Attributes the CREATION pipeline rewrites on a row it already reserved.
+#: Deliberately NOT in :data:`PATCHABLE_ATTRIBUTES`: no admin PATCH may reach
+#: them, and `portal.validate_patch` rejects them as unknown fields. They are
+#: encodable here because the provisioner and the build watcher write them
+#: through the same UpdateItem path.
+#:
+#: `host`, `app_key`, `ecs_service`, `container_port`, `cpu`, `memory`,
+#: `packages` and `upload_key` are absent on purpose -- they are written once
+#: by the conditional put that reserves the slug and are never edited. What a
+#: build was made from must not change under it.
+BUILD_ATTRIBUTES = (
+    "build_id",
+    "build_started_at",
+    "build_error",
+    "image",
+)
+
 
 def patch_value(name: str, value: Any) -> dict[str, Any] | None:
     """Encode one patched attribute, or ``None`` to REMOVE it.
@@ -461,9 +600,12 @@ def patch_value(name: str, value: Any) -> dict[str, Any] | None:
     empty value as a removal is what keeps a patched row byte-identical to a
     seeded one.
     """
-    if name in ("label", "description", "access_mode", "status"):
+    if name in ("label", "description", "access_mode", "status", "image", "build_id", "build_error"):
         text = str(value or "").strip()
         return {"S": text} if text else None
+    if name == "build_started_at":
+        number = int(value or 0)
+        return {"N": str(number)} if number else None
     if name == "allowed_emails":
         emails = [str(e).strip().lower() for e in (value or ())]
         emails = [e for e in emails if e]
@@ -576,6 +718,29 @@ class DynamoAppStore:
         (`portal.AdminList`) has to be able to tell "the row says nobody" from
         "we could not ask", and only one of those should be cached.
         """
+        return await self._config_strings(CONFIG_ADMIN_EMAILS)
+
+    async def creator_emails(self) -> tuple[str, ...]:
+        """The ``__config__`` row's ``creator_emails`` string set.
+
+        A SEPARATE set from ``admin_emails`` (portal-p2a.md's decision): being
+        an admin -- editing access, expiry and settings on apps that exist --
+        does not grant the right to put a new hostname on the public internet
+        and run someone's uploaded code in it. Same fail-closed handling.
+        """
+        return await self._config_strings(CONFIG_CREATOR_EMAILS)
+
+    async def key_denylist(self) -> tuple[str, ...]:
+        """Substrings banned from a public hostname.
+
+        In the row rather than in code so brand, molecule and client names can
+        be added without a deploy. Read the same way as the email sets, and
+        the same fail-closed rule applies -- a read error means no key
+        validates, not that every key does.
+        """
+        return await self._config_strings(CONFIG_KEY_DENYLIST)
+
+    async def _config_strings(self, attribute: str) -> tuple[str, ...]:
         response = await asyncio.to_thread(
             self._client.get_item,
             TableName=self._table,
@@ -585,10 +750,39 @@ class DynamoAppStore:
         return tuple(
             cleaned
             for cleaned in (
-                str(e).strip().lower() for e in _read_strings(item, "admin_emails")
+                str(e).strip().lower() for e in _read_strings(item, attribute)
             )
             if cleaned
         )
+
+    async def reserve(self, app: App) -> None:
+        """Write a NEW row, or raise :class:`HostTaken`.
+
+        This conditional put is the whole concurrency story of app creation
+        (portal-p2a.md, provisioning step 1). Two wizards submitting the same
+        key at the same moment both pass the validate-key check -- it is a
+        form affordance, not a lock -- and exactly one of them wins here. The
+        loser gets a 409 and has provisioned nothing, because nothing else is
+        attempted until this returns.
+        """
+        try:
+            await asyncio.to_thread(
+                self._client.put_item,
+                TableName=self._table,
+                Item=app_item(app),
+                ConditionExpression="attribute_not_exists(#host)",
+                ExpressionAttributeNames={"#host": "host"},
+            )
+        except Exception as exc:
+            # Matched on the error CODE rather than the exception class, so
+            # this module still imports nothing from botocore.
+            code = ""
+            response = getattr(exc, "response", None)
+            if isinstance(response, dict):
+                code = str((response.get("Error") or {}).get("Code") or "")
+            if code == "ConditionalCheckFailedException":
+                raise HostTaken(app.host) from exc
+            raise
 
     async def patch(self, host: str, changes: dict[str, Any]) -> None:
         """Rewrite a subset of one row's attributes.
@@ -668,8 +862,15 @@ class DynamoAppStore:
 __all__ = [
     "App",
     "AppStore",
+    "BUILD_ATTRIBUTES",
+    "CONFIG_ADMIN_EMAILS",
+    "CONFIG_CREATOR_EMAILS",
+    "CONFIG_KEY_DENYLIST",
     "CachedRegistry",
     "DynamoAppStore",
+    "HostTaken",
+    "STATUS_BUILDING",
+    "STATUS_BUILD_FAILED",
     "app_from_item",
     "app_item",
     "apps_from_items",

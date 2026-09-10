@@ -71,13 +71,28 @@ export function liveStateHint(state: LiveState | string): string | null {
       return 'Turned off by an administrator'
     case 'expired':
       return 'Access to this has expired'
+    case 'building':
+      return BUILD_HINT
+    case 'build_failed':
+      return 'Its first build failed — it has never run'
     default:
       return null
   }
 }
 
+/**
+ * The honest version of "almost there". R packages compile from source, so a
+ * first build is minutes, not seconds — portal-p2a.md says to say so.
+ */
+export const BUILD_HINT = 'Still building — first builds take 10–20 minutes'
+
 /** Rows an admin should look at today, in the order they should look. */
 export function needsAttention(app: App): string | null {
+  if (app.status === 'build_failed' || app.live_state === 'build_failed') {
+    return 'Build failed'
+  }
+  // A build in flight is progress, not a problem; it gets its own chip.
+  if (app.status === 'building' || app.live_state === 'building') return null
   if (app.status === 'expired' || app.live_state === 'expired') return 'Expired'
   if (accessIsBroken(app)) {
     return app.access_mode === 'users' ? 'No one can open it' : 'Reserved access mode'
@@ -98,7 +113,10 @@ export function needsAttention(app: App): string | null {
 export function attentionFlag(app: App): string | null {
   const flag = needsAttention(app)
   if (!flag) return null
-  if (flag.toLowerCase() === String(app.live_state).toLowerCase()) return null
+  // Underscores folded so "Build failed" is recognised as `build_failed`.
+  if (flag.toLowerCase().replace(/\s+/g, '_') === String(app.live_state).toLowerCase()) {
+    return null
+  }
   if (flag.startsWith('Expires ')) return null
   return flag
 }

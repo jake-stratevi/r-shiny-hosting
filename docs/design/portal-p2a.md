@@ -83,6 +83,11 @@ Package declaration: the wizard reads a `renv.lock` if present, else a
 `packages.txt`, else scans `library()`/`require()` calls and shows the
 detected list for confirmation. Never silently guess.
 
+**Where that inspection runs: in the browser, before the upload** — see
+portal-api.md, "Bundle inspection is CLIENT-SIDE". Not on the proxy task,
+which every app's traffic flows through. It is advisory only; `validate.py`
+in CodeBuild is the authority and re-checks everything server-side.
+
 ## Validation (before a build is started)
 
 Zip ≤ 100 MB, ≤ 5000 entries, ≤ 250 MB extracted, no path escaping root, no
@@ -161,12 +166,29 @@ CodeBuild `general1.small` at ~$0.005/minute — a 15-minute R image build is
 about **$0.08**. Uploads bucket and the extra ECR repos are cents. No new
 always-on compute. A created app costs nothing until someone opens it.
 
-## Open questions for Jake
+## Decisions (Jake, 2026-09-10)
 
-1. **Who may create apps** — any admin (all four of you), or a separate
-   "creator" flag? Simplest is admin = creator.
-2. **Slug policy** — `<key>.tools.stratevi.com` is public in the URL. Any
-   naming rules (client codenames, no drug names in hostnames)?
-3. **Package pinning** — require `renv.lock` for reproducibility, or accept
-   a loose `packages.txt`? Requiring renv is stricter and better for
-   validated work; accepting a list is friendlier to your team's habits.
+**Creation is its own permission, not implied by admin.** The `__config__`
+row gains `creator_emails` (Terraform-owned, exactly like `admin_emails`).
+Creating an app requires membership in that set; being an admin does **not**
+grant it. Fail-closed: no row, empty set, or a read error means nobody may
+create. Admin remains what it is — editing access, expiry and settings on
+apps that exist. The API returns `can_create` from `/me` so the UI can hide
+the "+" affordance rather than dangle a 403.
+
+**Hostnames are policed.** `<key>.tools.stratevi.com` is visible to clients,
+so the key is validated against, in order: shape (3–30 chars, lowercase
+`a-z0-9-`, no leading/trailing/double hyphen), a reserved list (`www`,
+`api`, `auth`, `admin`, `proxy`, `shinyplatform`, `dashboards`, `portal`,
+`mail`, plus every existing app key), and a **denylist of substrings** held
+in `__config__.key_denylist` so the terms are editable without a deploy.
+Seed it with brand/molecule names and client names; the wizard rejects with
+"that name can't be used in a public hostname — pick a project codename",
+never echoing why a specific term is banned. **Jake still owes the actual
+term list**; ship with the mechanism plus an obvious starter set.
+
+**Packages: accept either, confirm always.** Prefer `renv.lock` when
+present (best reproducibility); else `packages.txt`; else scan
+`library()`/`require()` calls. Whatever the source, show the resolved list
+back in the wizard for explicit confirmation before the build starts, and
+record it on the release so a rebuild is reproducible.

@@ -2,9 +2,13 @@ import type {
   App,
   AppPatch,
   AuditPage,
+  BuildStatus,
+  CreateAppBody,
   Me,
   MenuApp,
   MenuResponse,
+  UploadTicket,
+  ValidateKeyResult,
 } from './types'
 
 export const API_BASE = '/api/v1'
@@ -210,4 +214,114 @@ export const api = {
       { signal },
     )
   },
+
+  // --- P2a: creation -------------------------------------------------------
+
+  /** 200 whether or not the key is usable; `ok` carries the verdict. */
+  validateKey(key: string, signal?: AbortSignal): Promise<ValidateKeyResult> {
+    return request<ValidateKeyResult>(`${API_BASE}/apps/validate-key`, {
+      method: 'POST',
+      body: { key },
+      signal,
+    })
+  },
+
+  /** Presigned PUT for the zip. Rejects over-size before issuing a URL. */
+  createUpload(
+    filename: string,
+    size: number,
+    signal?: AbortSignal,
+  ): Promise<UploadTicket> {
+    return request<UploadTicket>(`${API_BASE}/uploads`, {
+      method: 'POST',
+      body: { filename, size },
+      signal,
+    })
+  },
+
+  // No inspect route: the bundle is read in the browser before the upload
+  // (src/lib/inspectBundle.ts). portal-api.md, "Bundle inspection is
+  // CLIENT-SIDE — there is no inspect endpoint".
+
+  /** 202 with the app object (`status: building`); 409 if the key is taken. */
+  createApp(body: CreateAppBody, signal?: AbortSignal): Promise<App> {
+    return request<App>(`${API_BASE}/apps`, { method: 'POST', body, signal })
+  },
+
+  build(host: string, signal?: AbortSignal): Promise<BuildStatus> {
+    return request<BuildStatus>(
+      `${API_BASE}/apps/${encodeURIComponent(host)}/build`,
+      { signal },
+    )
+  },
+}
+
+export interface UploadOptions {
+  /** 0..1. Fired from XHR's real upload events — never interpolated. */
+  onProgress?: (fraction: number) => void
+  signal?: AbortSignal
+}
+
+/**
+ * PUT the zip straight to S3 from the browser.
+ *
+ * `fetch` has no upload-progress event, so this is XHR: a 100 MB bundle over
+ * office wifi is a minute of silence otherwise, and silence during an upload
+ * reads as a hang.
+ *
+ * No `Content-Type` is set deliberately — the browser sends the File's own
+ * type, and adding an unsigned header to a presigned URL is the classic way
+ * to earn a 403. See README "Contract notes" #10.
+ */
+export function uploadToS3(
+  url: string,
+  file: File,
+  options: UploadOptions = {},
+): Promise<void> {
+  if (MOCK) {
+    return import('./mock').then(({ mockUpload }) => mockUpload(file, options))
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        options.onProgress?.(event.loaded / event.total)
+      }
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        options.onProgress?.(1)
+        resolve()
+        return
+      }
+      // S3 answers in XML, which is no use to anyone reading a wizard.
+      reject(
+        new ApiError(
+          xhr.status,
+          `S3 refused the upload (${xhr.status}). The link may have expired — go back and choose the file again.`,
+        ),
+      )
+    })
+
+    xhr.addEventListener('error', () =>
+      reject(new ApiError(0, 'The upload could not reach S3.')),
+    )
+    xhr.addEventListener('abort', () =>
+      reject(new DOMException('Upload aborted', 'AbortError')),
+    )
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        xhr.abort()
+        return
+      }
+      options.signal.addEventListener('abort', () => xhr.abort(), { once: true })
+    }
+
+    xhr.send(file)
+  })
 }

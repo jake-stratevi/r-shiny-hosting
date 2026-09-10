@@ -139,3 +139,34 @@ export const PowerIcon = svg(
 )
 
 export const BoltIcon = svg(<path d="M13 2.5 4.5 13.5H11l-.5 8L19 10.5h-6.5z" />)
+
+/** A zipped bundle: a box with the archive's zipper down its face. */
+export const ArchiveIcon = svg(
+  <>
+    <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+    <path d="M3.5 9.5h17" />
+    <path d="M12 12v1.5M12 16v1.5" />
+  </>,
+)
+
+export const PackageIcon = svg(
+  <>
+    <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" />
+    <path d="M4 7.5 12 12l8-4.5M12 12v9" />
+  </>,
+)
+
+export const RocketIcon = svg(
+  <>
+    <path d="M13.5 4.5c3.5-1.5 6-1 6-1s.5 2.5-1 6c-1.3 3-4 5.2-6.5 6.2L8.3 11.5C9.3 9 11 6 13.5 4.5Z" />
+    <circle cx="15" cy="9" r="1.5" />
+    <path d="m8.3 11.5-3 1 2 2M12.5 15.7l1 3 2-3" />
+  </>,
+)
+
+export const AlertIcon = svg(
+  <>
+    <path d="M10.6 4.2 2.9 17.5A1.6 1.6 0 0 0 4.3 20h15.4a1.6 1.6 0 0 0 1.4-2.5L13.4 4.2a1.6 1.6 0 0 0-2.8 0Z" />
+    <path d="M12 9.5v4M12 16.8h.01" />
+  </>,
+)

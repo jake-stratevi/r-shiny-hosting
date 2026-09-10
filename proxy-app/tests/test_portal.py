@@ -272,13 +272,23 @@ def _resolved(value):
 async def test_me_reports_the_caller_and_whether_they_are_an_admin():
     response = await portal_for().handle(request("/api/v1/me"))
     assert response.status == 200
-    assert body_of(response) == {"email": ADMIN, "is_admin": True}
+    # can_create is P2a's addition and is INDEPENDENT of is_admin: this
+    # portal has no creator list, so an admin still cannot create.
+    assert body_of(response) == {
+        "email": ADMIN,
+        "is_admin": True,
+        "can_create": False,
+    }
 
 
 @pytest.mark.asyncio
 async def test_me_reports_a_non_admin_as_one():
     response = await portal_for().handle(request("/api/v1/me", email=USER))
-    assert body_of(response) == {"email": USER, "is_admin": False}
+    assert body_of(response) == {
+        "email": USER,
+        "is_admin": False,
+        "can_create": False,
+    }
 
 
 @pytest.mark.asyncio

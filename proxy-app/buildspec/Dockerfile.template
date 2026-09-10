@@ -1,0 +1,175 @@
+# ---------------------------------------------------------------------------
+# Generic R Shiny app image — P2a self-service pipeline (docs/design/portal-p2a.md)
+#
+# This is the dashboard's proven Dockerfile (dashboard-app/Dockerfile),
+# generalized. Same base, same P3M binary strategy, same single-process
+# `shiny::runApp` CMD. What changed is documented at the bottom of this header.
+#
+# ---------------------------------------------------------------------------
+# PLACEHOLDER CONTRACT
+#
+# This file is a TEMPLATE. `render.py` replaces the tokens below and writes a
+# concrete `Dockerfile`. Every token is substituted into an `ARG` default, so
+# the rendered file is a complete, self-describing record of what was built:
+# `docker build .` with no arguments reproduces the image exactly, and
+# `--build-arg` still overrides for local experiments.
+#
+#   __R_VERSION__       R release, e.g. 4.4.1        (env R_VERSION)
+#   __P3M_DISTRO__      P3M binary distro codename   (env P3M_DISTRO, jammy)
+#   __P3M_SNAPSHOT__    P3M snapshot date YYYY-MM-DD (env P3M_SNAPSHOT)
+#   __PACKAGES__        space-separated R packages   (env PACKAGES)
+#   __SYSTEM_PACKAGES__ space-separated apt packages (base set + EXTRA_SYSTEM_PACKAGES)
+#   __APP_KEY__         app slug, for OCI labels     (env APP_KEY)
+#   __RELEASE_TAG__     release tag, for OCI labels  (env RELEASE_TAG)
+#   __BUILD_ID__        CodeBuild build id or "local"
+#
+# Tokens are matched literally as `__NAME__`. Nothing else in this file is
+# rewritten. If you add a token, add it to render.py's TOKENS map too — an
+# unsubstituted `__TOKEN__` left in the output is a hard render error.
+#
+# ---------------------------------------------------------------------------
+# DIFFERENCES FROM dashboard-app/Dockerfile — read before reviewing
+#
+#   1. NO HEARTBEAT. dashboard-app/app.R carries the ADR-0006 client-side
+#      heartbeat because the sleeper Lambda infers idleness from the ALB's
+#      RequestCountPerTarget, and a Shiny websocket emits no HTTP requests.
+#      Apps built by this pipeline are BORN PROXIED: the proxy holds the
+#      websocket and knows who is connected as a fact (docs/design/proxy.md,
+#      "Sleep is server-side"). There is no waker, no per-app target group and
+#      no RequestCountPerTarget to fool. Injecting a heartbeat here would be
+#      dead code at best and a source of phantom traffic at worst. Do not add
+#      one, and do not "fix" an uploaded app that lacks one.
+#
+#   2. Non-root. The dashboard image runs as root; this one runs as uid 10001.
+#      Per-app containment is a stated P2a control, so the container layer
+#      should not hand an uploaded bundle root.
+#
+#   3. Packages and system libraries are parameterised rather than hard-coded,
+#      and the apt set is widened to cover the common Shiny/plotly/readxl/
+#      ggplot2 stack (fonts, image codecs, ICU) instead of only what the
+#      Tarpeyo app happened to need.
+#
+#   4. SHINY_CPU_WORKERS defaults to 1 in the image (see ADR-0011 below).
+#
+#   5. OCI labels record app key, release, package list and snapshot, so
+#      `docker inspect` on a pulled image answers "what is this and how was it
+#      built" without consulting DynamoDB.
+# ---------------------------------------------------------------------------
+
+ARG R_VERSION=__R_VERSION__
+
+# rocker/r-ver is pinned by patch release, not `latest`. It is also already
+# wired for Posit Public Package Manager, which is what makes this build take
+# minutes instead of the 30+ that compiling plotly's dependency tree from
+# source would cost.
+FROM rocker/r-ver:${R_VERSION}
+
+ARG R_VERSION
+ARG P3M_DISTRO=__P3M_DISTRO__
+ARG P3M_SNAPSHOT=__P3M_SNAPSHOT__
+ARG R_PACKAGES="__PACKAGES__"
+ARG SYSTEM_PACKAGES="__SYSTEM_PACKAGES__"
+# APP_SLUG, not APP_KEY: BuildKit's SecretsUsedInArgOrEnv lint fires on any
+# ARG whose name ends in KEY and would print a scary false positive in every
+# build log. The environment variable the portal passes is still APP_KEY.
+ARG APP_SLUG=__APP_KEY__
+ARG RELEASE_TAG=__RELEASE_TAG__
+ARG BUILD_ID=__BUILD_ID__
+
+# Build-time install parallelism only. This is NOT the ADR-0011 worker count;
+# it never reaches the running container.
+ARG BUILD_NCPUS=4
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System libraries. The first four are what the dashboard image needs
+# (curl(1) is used by the ECS/container health check); the rest cover the
+# graphics, font and text-shaping dependencies that ggplot2/ragg/systemfonts,
+# plotly, readxl and stringi pull in. P3M ships binaries, so most of these are
+# needed at RUNTIME rather than compile time — they must be in the image
+# either way.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ${SYSTEM_PACKAGES} \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pin to a dated snapshot so rebuilds get identical package versions.
+# Bump it deliberately, not accidentally.
+ENV CRAN_SNAPSHOT=https://packagemanager.posit.co/cran/__linux__/${P3M_DISTRO}/${P3M_SNAPSHOT}
+
+# ARG values are visible to RUN as environment variables, so the R script
+# below reads R_PACKAGES/BUILD_NCPUS straight out of the environment rather
+# than being string-spliced into the source — one less quoting hazard.
+#
+# P3M only serves precompiled binaries when the User-Agent carries the R
+# version; rocker's Rprofile.site sets that, but we set it explicitly because
+# we are overriding `repos` here and a silent fallback to source builds turns
+# a 4-minute build into a 40-minute one.
+#
+# The install is verified rather than trusted: install.packages() warns on
+# failure and exits 0, which would happily ship an image whose app cannot
+# start. Same check the dashboard image makes, generalized.
+RUN R -q -e "\
+      options(repos = c(CRAN = Sys.getenv('CRAN_SNAPSHOT')), \
+              HTTPUserAgent = sprintf('R/%s R (%s)', getRversion(), \
+                  paste(getRversion(), R.version[['platform']], \
+                        R.version[['arch']], R.version[['os']])), \
+              Ncpus = max(1L, as.integer(Sys.getenv('BUILD_NCPUS', '4')))); \
+      pkgs <- strsplit(trimws(Sys.getenv('R_PACKAGES')), '[[:space:]]+')[[1]]; \
+      pkgs <- unique(pkgs[nzchar(pkgs)]); \
+      if (!length(pkgs)) { cat('ERROR: no R packages were declared for this app\n'); quit(status = 1) }; \
+      cat('installing', length(pkgs), 'packages from', Sys.getenv('CRAN_SNAPSHOT'), '\n'); \
+      install.packages(pkgs); \
+      missing <- setdiff(pkgs, rownames(installed.packages())); \
+      if (length(missing)) { \
+        cat('ERROR: declared R packages failed to install: ', paste(missing, collapse = ', '), '\n', sep = ''); \
+        quit(status = 1) \
+      }; \
+      cat('all', length(pkgs), 'packages installed\n')"
+
+# ADR-0011: the app must read SHINY_CPU_WORKERS instead of calling
+# parallel::detectCores(), which reports the Fargate HOST's cores. The task
+# definition sets the real value (floor(cpu/1024) - 1) and an ECS environment
+# entry overrides this ENV, so the image never fights it. The default exists
+# only so an app run outside ECS — locally, or in this build's smoke test —
+# gets a sane 1 instead of an empty string.
+ENV SHINY_CPU_WORKERS=1
+
+# Non-root. Created before COPY so --chown resolves.
+RUN useradd --system --uid 10001 --gid 100 --create-home --home-dir /home/shiny shiny \
+    && mkdir -p /srv/app \
+    && chown 10001:100 /srv/app
+
+WORKDIR /srv/app
+
+# The whole validated, flattened bundle. validate.py has already guaranteed
+# there are no symlinks and no paths escaping the root, and that an entrypoint
+# (app.R, or ui.R + server.R) sits at this level. Data files the app reads at
+# startup are baked in with it, exactly as the dashboard bakes in its xlsx.
+COPY --chown=10001:100 . /srv/app
+
+USER 10001:100
+
+EXPOSE 3838
+
+# Shiny is served directly rather than through Shiny Server. One app, one
+# process, one container: the extra layer would only add image size and a
+# config file to get wrong. runApp() on a directory handles both entrypoint
+# shapes (app.R, or ui.R + server.R).
+CMD ["R", "-q", "-e", "shiny::runApp('/srv/app', host = '0.0.0.0', port = 3838, launch.browser = FALSE)"]
+
+# Informational only — ECS uses the task definition's healthCheck, which wins.
+# This makes `docker run` locally tell you whether the app actually came up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD curl -fsS http://127.0.0.1:3838/ >/dev/null || exit 1
+
+# Labels read the ARGs rather than the rendered literals, so they stay true
+# even when someone overrides a --build-arg by hand.
+LABEL org.opencontainers.image.title="shiny-${APP_SLUG}" \
+      org.opencontainers.image.version="${RELEASE_TAG}" \
+      com.stratevi.shiny.app-key="${APP_SLUG}" \
+      com.stratevi.shiny.release="${RELEASE_TAG}" \
+      com.stratevi.shiny.r-version="${R_VERSION}" \
+      com.stratevi.shiny.p3m-snapshot="${P3M_SNAPSHOT}" \
+      com.stratevi.shiny.packages="${R_PACKAGES}" \
+      com.stratevi.shiny.build-id="${BUILD_ID}" \
+      com.stratevi.shiny.heartbeat="none (proxied; see ADR-0006 and docs/design/proxy.md)"

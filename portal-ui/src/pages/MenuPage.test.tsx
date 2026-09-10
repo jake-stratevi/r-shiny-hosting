@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MenuApp } from '../api/types'
 import { WAKE_HINT } from '../lib/appDisplay'
-import { clientMe, renderPage } from '../test/render'
+import { adminNoCreateMe, clientMe, renderPage } from '../test/render'
 import { MenuPage } from './MenuPage'
 
 const menu = vi.hoisted(() => vi.fn())
@@ -65,17 +65,21 @@ describe('MenuPage', () => {
     expect(screen.getByText('Awake')).toBeInTheDocument()
   })
 
-  it('shows admins a "New app" card marked as P2, and never wires it up', async () => {
+  it('gives a creator a "New app" card that opens the wizard', async () => {
     renderPage(<MenuPage />)
 
     const card = await screen.findByText('New app')
-    expect(screen.getByText('Coming in P2')).toBeInTheDocument()
-    // Deliberately inert: no route behind it until the wizard exists.
-    expect(card.closest('a')).toBeNull()
-    expect(card.closest('[aria-disabled="true"]')).not.toBeNull()
+    expect(card.closest('a')).toHaveAttribute('href', '/admin/apps/new')
   })
 
-  it('hides the "New app" card from non-admins', async () => {
+  it('hides the "New app" card from an admin who may not create', async () => {
+    renderPage(<MenuPage />, { me: adminNoCreateMe })
+
+    await screen.findByRole('heading', { level: 1 })
+    expect(screen.queryByText('New app')).not.toBeInTheDocument()
+  })
+
+  it('hides the "New app" card from a plain client', async () => {
     renderPage(<MenuPage />, { me: clientMe })
 
     await screen.findByRole('heading', { level: 1 })

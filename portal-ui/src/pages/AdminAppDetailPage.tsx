@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { App } from '../api/types'
-import { Button, ButtonLink } from '../components/Button'
+import { Button, ButtonLink, ButtonRoute } from '../components/Button'
 import { Monogram } from '../components/Monogram'
 import { StatusBadge } from '../components/StatusBadge'
 import { Tabs, TabPanel } from '../components/Tabs'
@@ -176,6 +176,49 @@ function CopyLinkButton({ url }: { url: string }) {
 
 /** One state-driven card, only when something is actually the matter. */
 function StateNotice({ app }: { app: App }) {
+  // P2a: a build in flight is not "the matter", but it does explain why the
+  // app answers nothing yet, and the build screen is where to watch it.
+  if (app.status === 'building' || app.live_state === 'building') {
+    return (
+      <div className="mt-5">
+        <Notice
+          tone="info"
+          title="This app is still building"
+          action={
+            <ButtonRoute to={`/admin/apps/${encodeURIComponent(app.host)}/build`}>
+              Watch the build
+            </ButtonRoute>
+          }
+        >
+          Its image is being built. First builds take 10–20 minutes because R
+          packages compile from source.
+        </Notice>
+      </div>
+    )
+  }
+
+  if (app.status === 'build_failed' || app.live_state === 'build_failed') {
+    return (
+      <div className="mt-5">
+        <Notice
+          tone="danger"
+          title="This app's build failed"
+          action={
+            <ButtonRoute
+              to={`/admin/apps/${encodeURIComponent(app.host)}/build`}
+              variant="outline"
+            >
+              See the build log
+            </ButtonRoute>
+          }
+        >
+          It has never run, so there is nothing to open. The row and the
+          half-built resources were kept deliberately, for inspection.
+        </Notice>
+      </div>
+    )
+  }
+
   const flag = needsAttention(app)
   if (!flag) return null
 

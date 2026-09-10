@@ -21,6 +21,28 @@ Env (exactly this, nothing else):
                   the API still answers and `/` serves a placeholder, so the
                   backend is deployable before portal-ui/ exists.
 
+P2a self-service creation (docs/design/portal-p2a.md) adds one more block,
+all of it optional TOGETHER and required TOGETHER. Unlike everything above,
+a partial block DISABLES creation and logs rather than failing startup --
+see :class:`Creation` for why that one exception exists:
+
+    UPLOADS_BUCKET         shiny-portal-uploads-<acct>; presigned PUT target.
+    CODEBUILD_PROJECT      shiny-app-build; the one shared build project.
+    APP_ROLE_BOUNDARY_ARN  the permissions boundary EVERY created role
+                           carries. Without it, creation is off -- there is
+                           no mode in which a role is created unfenced.
+    APP_DATA_BUCKET        shiny-app-data-<acct>; each app's role may read
+                           only its own <app-key>/ prefix.
+    APP_DOMAIN             tools.stratevi.com; <key>.<APP_DOMAIN> is the host.
+    APP_SUBNET_IDS         comma-separated; the created service's subnets.
+    APP_SECURITY_GROUP_ID  the shared apps SG the proxy is allowed into.
+    APP_EXECUTION_ROLE_ARN the shared platform execution role (image pull +
+                           log writes), same one every app stack uses.
+    APP_LOG_GROUP          the log group created apps write to.
+    COGNITO_USER_POOL_ID   the Hub pool.
+    COGNITO_CLIENT_ID      the ONE shared app client whose callback list
+                           grows by one URL per created app.
+
 Anything required and missing is a startup failure, not a degraded mode: a
 proxy that cannot read the apps table would 404 every app it fronts, which is
 worse than not starting.
@@ -52,6 +74,59 @@ class ConfigError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Creation:
+    """The P2a creation pipeline's environment, all of it or none of it.
+
+    All-or-nothing at the FEATURE level: either every variable is present and
+    creation works, or creation is off entirely. There is no partial mode,
+    because a pipeline that fails at its third API call has already reserved
+    a hostname and created an ECR repository, which is far more expensive to
+    clean up than a feature that never started.
+
+    A partial environment disables creation and logs loudly -- it is NOT a
+    startup failure, unlike everything else in this module. The reason is
+    blast radius: this task is in the request path for every app on the
+    platform, and refusing to boot over a misconfigured *creation* variable
+    would take the dashboard, the model and the portal down to protect a
+    wizard nobody is currently using. See :attr:`Config.creation_error`,
+    which `__main__` logs at ERROR on the way up.
+    """
+
+    uploads_bucket: str
+    codebuild_project: str
+    #: The Terraform-owned permissions boundary. Its presence in this REQUIRED
+    #: set is the outermost layer of the boundary invariant: with no boundary
+    #: there is no creation, so there is no path to an unfenced app role.
+    #: See provision.Boto3TaskRoles' banner for the other three layers.
+    role_boundary_arn: str
+    data_bucket: str
+    domain: str
+    subnet_ids: tuple[str, ...]
+    security_group_id: str
+    execution_role_arn: str
+    log_group: str
+    user_pool_id: str
+    client_id: str
+
+
+#: The env names :class:`Creation` reads, in the order a missing-variable
+#: message should list them.
+CREATION_VARIABLES = (
+    "UPLOADS_BUCKET",
+    "CODEBUILD_PROJECT",
+    "APP_ROLE_BOUNDARY_ARN",
+    "APP_DATA_BUCKET",
+    "APP_DOMAIN",
+    "APP_SUBNET_IDS",
+    "APP_SECURITY_GROUP_ID",
+    "APP_EXECUTION_ROLE_ARN",
+    "APP_LOG_GROUP",
+    "COGNITO_USER_POOL_ID",
+    "COGNITO_CLIENT_ID",
+)
+
+
+@dataclass(frozen=True)
 class Config:
     """Everything the proxy reads from the environment."""
 
@@ -65,9 +140,18 @@ class Config:
     #: is. Empty means no portal.
     portal_hosts: tuple[str, ...] = field(default_factory=tuple)
     portal_dist: str = DEFAULT_PORTAL_DIST
+    #: None until the P2a Terraform lands. The P2a routes answer 503 while it
+    #: is None -- they are advertised in the contract, so 404 would be a lie.
+    creation: Creation | None = None
+    #: Why creation is off, when it is off for a REASON rather than because
+    #: nobody asked for it. Empty when the block is simply absent.
+    creation_error: str = ""
 
     def portal_enabled(self) -> bool:
         return bool(self.portal_hosts)
+
+    def creation_enabled(self) -> bool:
+        return self.creation is not None
 
 
 def parse_portal_hosts(raw: str) -> tuple[str, ...]:
@@ -118,6 +202,7 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
     if missing:
         raise ConfigError("missing required environment: " + ", ".join(missing))
 
+    creation, creation_error = creation_from_env(env)
     return Config(
         cluster=cluster,
         apps_table=apps_table,
@@ -127,6 +212,51 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         log_level=log_level,
         portal_hosts=portal_hosts,
         portal_dist=portal_dist,
+        creation=creation,
+        creation_error=creation_error,
+    )
+
+
+def creation_from_env(env: Mapping[str, str]) -> tuple[Creation | None, str]:
+    """The P2a block: the settings, or ``None`` plus why not.
+
+    Never raises. See :class:`Creation` for why this one block degrades
+    instead of failing startup the way the rest of the contract does.
+    """
+    values = {name: (env.get(name) or "").strip() for name in CREATION_VARIABLES}
+    present = [name for name, value in values.items() if value]
+    if not present:
+        return None, ""  # the P2a Terraform has not landed yet; creation is off
+
+    missing = [name for name in CREATION_VARIABLES if not values[name]]
+    if missing:
+        return None, (
+            "app creation is disabled: partly configured, missing "
+            + ", ".join(missing)
+        )
+
+    subnets = tuple(
+        chunk.strip() for chunk in values["APP_SUBNET_IDS"].split(",") if chunk.strip()
+    )
+    if not subnets:
+        return None, "app creation is disabled: APP_SUBNET_IDS names no subnets"
+
+    return _creation(values, subnets), ""
+
+
+def _creation(values: Mapping[str, str], subnets: tuple[str, ...]) -> Creation:
+    return Creation(
+        uploads_bucket=values["UPLOADS_BUCKET"],
+        codebuild_project=values["CODEBUILD_PROJECT"],
+        role_boundary_arn=values["APP_ROLE_BOUNDARY_ARN"],
+        data_bucket=values["APP_DATA_BUCKET"],
+        domain=normalize_host(values["APP_DOMAIN"]),
+        subnet_ids=subnets,
+        security_group_id=values["APP_SECURITY_GROUP_ID"],
+        execution_role_arn=values["APP_EXECUTION_ROLE_ARN"],
+        log_group=values["APP_LOG_GROUP"],
+        user_pool_id=values["COGNITO_USER_POOL_ID"],
+        client_id=values["COGNITO_CLIENT_ID"],
     )
 
 

@@ -2,18 +2,37 @@ import type { ReactNode } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { ApiError, api } from './api/client'
 import { Layout } from './components/Layout'
-import { ErrorState, Loading, NoAdminAccess } from './components/states'
+import {
+  ErrorState,
+  Loading,
+  NoAdminAccess,
+  NoCreateAccess,
+} from './components/states'
 import { useResource } from './hooks/useResource'
 import { MeContext, useMe } from './lib/meContext'
 import { AdminAppDetailPage } from './pages/AdminAppDetailPage'
 import { AdminAppsPage } from './pages/AdminAppsPage'
+import { BuildPage } from './pages/BuildPage'
 import { MenuPage } from './pages/MenuPage'
+import { NewAppWizard } from './pages/NewAppWizard'
 
 /** Admin routes are hidden in the nav and gated here; the API gates too. */
 function RequireAdmin({ children }: { children: ReactNode }) {
   const me = useMe()
   if (!me) return <Loading label="Checking access" />
   if (!me.is_admin) return <NoAdminAccess />
+  return <>{children}</>
+}
+
+/**
+ * Creation is its own permission (portal-p2a.md "Decisions"): admin does NOT
+ * imply it, and it does not imply admin. So the wizard and the build screen
+ * gate on `can_create` alone, and an absent field fails closed.
+ */
+function RequireCreate({ children }: { children: ReactNode }) {
+  const me = useMe()
+  if (!me) return <Loading label="Checking access" />
+  if (!me.can_create) return <NoCreateAccess />
   return <>{children}</>
 }
 
@@ -60,6 +79,23 @@ export default function App() {
               <RequireAdmin>
                 <AdminAppsPage />
               </RequireAdmin>
+            }
+          />
+          {/* Before /admin/apps/:host, or "new" is read as a hostname. */}
+          <Route
+            path="/admin/apps/new"
+            element={
+              <RequireCreate>
+                <NewAppWizard />
+              </RequireCreate>
+            }
+          />
+          <Route
+            path="/admin/apps/:host/build"
+            element={
+              <RequireCreate>
+                <BuildPage />
+              </RequireCreate>
             }
           />
           <Route

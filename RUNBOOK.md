@@ -709,8 +709,29 @@ python proxy-app/seed.py --table shiny-proxy-apps
 Checklist, in order — full rationale for each step is in
 [docs/design/proxy.md](docs/design/proxy.md):
 
-1. Add the app's hostname to `app_hosts` in `proxy/terraform.tfvars`, plan and
-   apply the `proxy` stack.
+1. Register the app's callback URL on the shared Cognito client. **From P2a
+   this is a CLI step, not a Terraform one** — `proxy/cognito.tf` now carries
+   `ignore_changes = [callback_urls, logout_urls]` because the portal adds a
+   URL per app it creates, so editing `app_hosts` in `proxy/terraform.tfvars`
+   no longer has any effect on its own. (Still add the hostname there: it
+   keeps the file an honest record of what should be registered, and it is
+   what a rebuild from scratch would use.)
+
+   Read the current lists, append the two URLs, and write the whole client
+   back — `update-user-pool-client` REPLACES the entire configuration, so
+   every other field must be resent or it is silently wiped:
+
+   ```powershell
+   $pool = "us-east-1_LI3CZpwAF"
+   $client = "1senki56hh2ngv7neuqhot6gv8"
+   aws cognito-idp describe-user-pool-client --user-pool-id $pool --client-id $client `
+     --query "UserPoolClient.{cb:CallbackURLs,lo:LogoutURLs}" --output json
+   ```
+
+   Then either add them through the Cognito console (far safer by hand — it
+   preserves the other fields for you), or let the portal do it, which is
+   the whole point of the wizard. Verify afterwards that the pre-existing
+   URLs are all still present.
 2. Seed the app's row (above) — `--dry-run` first, then for real.
 3. Set `proxied = true` in the app's own `terraform.tfvars`, then plan and
    apply that stack. Do this while the app is asleep: the ECS service gets

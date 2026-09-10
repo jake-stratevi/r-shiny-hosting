@@ -4,27 +4,39 @@
 // It returns real `Response` objects, which means the client's CSRF, JSON and
 // error handling run exactly as they do against the live service.
 
-import { fixtureApps, fixtureAudit, fixtureMe } from './fixtures'
+import {
+  fixtureApps,
+  fixtureAudit,
+  fixtureBuildLog,
+  fixtureMe,
+} from './fixtures'
 import {
   ACCESS_MODES,
   IDLE_MINUTES_MAX,
   IDLE_MINUTES_MIN,
+  KEY_MAX_LENGTH,
+  KEY_MIN_LENGTH,
   MAX_SESSION_HOURS_MAX,
   MAX_SESSION_HOURS_MIN,
+  MAX_ZIP_BYTES,
+  MAX_ZIP_MB,
+  TASK_SIZES,
   type App,
   type AppPatch,
   type LiveState,
 } from './types'
+import type { UploadOptions } from './client'
 
 const LATENCY_MS = 180
 
 // Mutable copy so PATCHes stick for the life of the page.
 const state: App[] = fixtureApps.map((a) => ({ ...a, allowed_emails: [...a.allowed_emails] }))
 const ADMIN_KEY = 'portalMockAdmin'
+const CREATOR_KEY = 'portalMockCreator'
 
-function storedAdmin(): boolean | null {
+function storedFlag(key: string): boolean | null {
   try {
-    const raw = localStorage.getItem(ADMIN_KEY)
+    const raw = localStorage.getItem(key)
     if (raw === '0') return false
     if (raw === '1') return true
   } catch {
@@ -33,26 +45,50 @@ function storedAdmin(): boolean | null {
   return null
 }
 
-let me = { ...fixtureMe, is_admin: storedAdmin() ?? fixtureMe.is_admin }
+function rememberFlag(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? '1' : '0')
+  } catch {
+    /* ignore */
+  }
+}
+
+let me = {
+  ...fixtureMe,
+  is_admin: storedFlag(ADMIN_KEY) ?? fixtureMe.is_admin,
+  can_create: storedFlag(CREATOR_KEY) ?? fixtureMe.can_create ?? false,
+}
 
 /**
- * Flip the admin gate from the console and reload to see the non-admin view:
- *   __portalMock.setAdmin(false)
+ * Flip either gate from the console and reload:
+ *   __portalMock.setAdmin(false)     the non-admin view + 403 state
+ *   __portalMock.setCreator(false)   an admin who may not create
  */
 declare global {
   // eslint-disable-next-line no-var
-  var __portalMock: { setAdmin(v: boolean): void; apps(): App[] } | undefined
+  var __portalMock:
+    | {
+        setAdmin(v: boolean): void
+        setCreator(v: boolean): void
+        apps(): App[]
+        /** Make the next created app's build fail, to see that screen. */
+        failNextBuild(v?: boolean): void
+      }
+    | undefined
 }
 globalThis.__portalMock = {
   setAdmin(v: boolean) {
     me = { ...me, is_admin: v }
-    try {
-      localStorage.setItem(ADMIN_KEY, v ? '1' : '0')
-    } catch {
-      /* ignore */
-    }
+    rememberFlag(ADMIN_KEY, v)
+  },
+  setCreator(v: boolean) {
+    me = { ...me, can_create: v }
+    rememberFlag(CREATOR_KEY, v)
   },
   apps: () => state,
+  failNextBuild(v = true) {
+    failNext = v
+  },
 }
 
 const PATCHABLE = new Set<keyof AppPatch>([
@@ -94,6 +130,8 @@ function drift(): void {
 }
 
 function deriveLiveState(app: App): LiveState {
+  if (app.status === 'building') return 'building'
+  if (app.status === 'build_failed') return 'build_failed'
   if (app.status === 'disabled') return 'disabled'
   if (app.status === 'expired') return 'expired'
   if (app.running_count > 0) return 'awake'
@@ -113,6 +151,52 @@ export async function mockFetch(url: string, init: RequestInit = {}): Promise<Re
   }
 
   if (pathname === '/api/v1/me') return json(me)
+
+  // --- P2a creation routes -------------------------------------------------
+  // Deliberately BEFORE the admin gate below: creation is its own permission
+  // and admin alone must be a 403, not a pass (portal-p2a.md Decisions).
+  if (
+    pathname === '/api/v1/apps/validate-key' ||
+    pathname === '/api/v1/uploads' ||
+    (pathname === '/api/v1/apps' && method === 'POST') ||
+    /^\/api\/v1\/apps\/[^/]+\/build$/.test(pathname)
+  ) {
+    if (!me.can_create) {
+      return fail(403, 'Creating apps requires creator permission.')
+    }
+  }
+
+  if (pathname === '/api/v1/apps/validate-key') {
+    if (method !== 'POST') return fail(405, 'Method not allowed.')
+    return json(validateKey(String(body(init).key ?? '')))
+  }
+
+  if (pathname === '/api/v1/uploads') {
+    if (method !== 'POST') return fail(405, 'Method not allowed.')
+    const { filename, size } = body(init)
+    if (typeof filename !== 'string' || !filename.toLowerCase().endsWith('.zip')) {
+      return fail(400, 'Only .zip bundles are accepted.')
+    }
+    if (Number(size) > MAX_ZIP_BYTES) {
+      return fail(400, `That bundle is over the ${MAX_ZIP_MB} MB limit.`)
+    }
+    return json({
+      upload_key: `uploads/${uuid()}.zip`,
+      url: 'https://shiny-portal-uploads-652063276768.s3.amazonaws.com/mock-presigned',
+      expires_in: 900,
+    })
+  }
+
+  // No /uploads/inspect: the wizard reads the zip in the browser before it
+  // uploads (src/lib/inspectBundle.ts), so there is nothing to mock here.
+
+  if (pathname === '/api/v1/apps' && method === 'POST') return createApp(init)
+
+  const buildMatch = pathname.match(/^\/api\/v1\/apps\/([^/]+)\/build$/)
+  if (buildMatch) {
+    if (method !== 'GET') return fail(405, 'Method not allowed.')
+    return buildStatus(decodeURIComponent(buildMatch[1]))
+  }
 
   if (pathname === '/api/v1/menu') {
     return json({
@@ -213,5 +297,258 @@ function decodeCursor(cursor: string | null): number {
     return Number(JSON.parse(atob(cursor)).offset) || 0
   } catch {
     return 0
+  }
+}
+
+// ---------------------------------------------------------------------------
+// P2a — creation
+// ---------------------------------------------------------------------------
+
+function body(init: RequestInit): Record<string, unknown> {
+  try {
+    return JSON.parse(String(init.body ?? '{}')) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+const uuid = () =>
+  `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`
+
+/** portal-p2a.md "Hostnames are policed", in the same order the API checks. */
+const RESERVED_KEYS = [
+  'www',
+  'api',
+  'auth',
+  'admin',
+  'proxy',
+  'shinyplatform',
+  'dashboards',
+  'portal',
+  'mail',
+]
+
+/**
+ * A starter denylist. The real one lives in `__config__.key_denylist` so the
+ * terms are editable without a deploy — and the refusal never says which term
+ * matched, which is the point of it being a substring list.
+ */
+const KEY_DENYLIST = ['tarpeyo', 'nefecon', 'travere', 'calliditas']
+
+function validateKey(raw: string): { ok: boolean; host?: string; reason?: string } {
+  const key = raw.trim().toLowerCase()
+
+  if (key.length < KEY_MIN_LENGTH || key.length > KEY_MAX_LENGTH) {
+    return {
+      ok: false,
+      reason: `A key is ${KEY_MIN_LENGTH}–${KEY_MAX_LENGTH} characters; that one is ${key.length}.`,
+    }
+  }
+  if (!/^[a-z0-9-]+$/.test(key)) {
+    return { ok: false, reason: 'Only lowercase letters, digits and hyphens.' }
+  }
+  if (key.startsWith('-') || key.endsWith('-') || key.includes('--')) {
+    return { ok: false, reason: 'No leading, trailing or doubled hyphens.' }
+  }
+  if (RESERVED_KEYS.includes(key)) {
+    return { ok: false, reason: `“${key}” is reserved by the platform.` }
+  }
+  if (KEY_DENYLIST.some((term) => key.includes(term))) {
+    // Never echoes which term matched — see portal-p2a.md.
+    return {
+      ok: false,
+      reason: 'That name can’t be used in a public hostname — pick a project codename.',
+    }
+  }
+  if (state.some((a) => a.app_key === key)) {
+    return { ok: false, reason: `An app already uses the key “${key}”.` }
+  }
+  return { ok: true, host: `${key}.tools.stratevi.com` }
+}
+
+let failNext = false
+
+interface MockBuild {
+  started_at: number
+  polls: number
+  outcome: 'succeeded' | 'failed'
+}
+
+const builds = new Map<string, MockBuild>()
+
+/** Enough polls to see the phases move without waiting a real 15 minutes. */
+const PHASES = [
+  'SUBMITTED',
+  'QUEUED',
+  'PROVISIONING',
+  'DOWNLOAD_SOURCE',
+  'INSTALL',
+  'PRE_BUILD',
+  'BUILD',
+  'POST_BUILD',
+]
+
+async function createApp(init: RequestInit): Promise<Response> {
+  const payload = body(init)
+  const key = String(payload.key ?? '')
+
+  const verdict = validateKey(key)
+  if (!verdict.ok) {
+    // A key that collides is a 409; anything else is a 400.
+    const conflict = verdict.reason?.startsWith('An app already uses')
+    return fail(conflict ? 409 : 400, verdict.reason ?? 'Invalid key.')
+  }
+  if (!payload.upload_key) return fail(400, 'upload_key is required.')
+  if (!('expires_at' in payload)) {
+    return fail(400, 'expires_at must be present — send a date or null for never.')
+  }
+  if (!Array.isArray(payload.packages) || payload.packages.length === 0) {
+    return fail(400, 'packages must be the confirmed list.')
+  }
+  const size = TASK_SIZES.find(
+    (s) => s.cpu === Number(payload.cpu) && s.memory === Number(payload.memory),
+  )
+  if (!size) return fail(400, 'cpu/memory must be one of the two allowed sizes.')
+
+  const host = verdict.host as string
+  const app: App = {
+    host,
+    app_key: key,
+    label: String(payload.label ?? key),
+    description: String(payload.description ?? ''),
+    ecs_service: `shiny-${key}`,
+    container_port: 3838,
+    status: 'building',
+    live_state: 'building',
+    access_mode: String(payload.access_mode ?? 'users'),
+    allowed_emails: Array.isArray(payload.allowed_emails)
+      ? (payload.allowed_emails as string[]).map((e) => e.trim().toLowerCase())
+      : [],
+    idle_minutes: Number(payload.idle_minutes ?? 20),
+    max_session_hours: Number(payload.max_session_hours ?? 12),
+    expires_at: payload.expires_at === null ? null : Number(payload.expires_at),
+    last_active: null,
+    awake_since: null,
+    desired_count: 0,
+    running_count: 0,
+  }
+  state.unshift(app)
+
+  builds.set(host, {
+    started_at: Math.floor(Date.now() / 1000),
+    polls: 0,
+    // A key containing "fail" (or __portalMock.failNextBuild()) takes the
+    // failure path, so that screen is reachable in mock mode too.
+    outcome: failNext || key.includes('fail') ? 'failed' : 'succeeded',
+  })
+  failNext = false
+
+  return json(app, 202)
+}
+
+function buildStatus(host: string): Response {
+  const build = builds.get(host)
+  const app = state.find((a) => a.host === host)
+
+  if (!build) {
+    // The two seeded fixtures have no build record; synthesise one so the
+    // build screen is reachable from the admin list on a cold reload.
+    if (app?.live_state === 'building') {
+      return json({
+        state: 'building',
+        phase: 'BUILD',
+        started_at: Math.floor(Date.now() / 1000) - 7 * 60,
+        elapsed_s: 7 * 60,
+        log_url: consoleUrl(app.app_key),
+        log_tail: fixtureBuildLog,
+      })
+    }
+    if (app?.live_state === 'build_failed') {
+      return json({
+        state: 'failed',
+        phase: 'BUILD',
+        started_at: Math.floor(Date.now() / 1000) - 18 * 60,
+        elapsed_s: 18 * 60,
+        log_url: consoleUrl(app.app_key),
+        log_tail: [...fixtureBuildLog, ...FAILURE_LINES],
+      })
+    }
+    return fail(404, `No build is recorded for ${host}.`)
+  }
+
+  build.polls += 1
+  const elapsed = Math.floor(Date.now() / 1000) - build.started_at
+  const done = build.polls > PHASES.length
+  const key = app?.app_key ?? host.split('.')[0]
+
+  if (!done) {
+    return json({
+      state: 'building',
+      phase: PHASES[Math.min(build.polls - 1, PHASES.length - 1)],
+      started_at: build.started_at,
+      elapsed_s: elapsed,
+      log_url: consoleUrl(key),
+      log_tail: fixtureBuildLog.slice(0, 2 + build.polls * 2),
+    })
+  }
+
+  if (build.outcome === 'failed') {
+    if (app) {
+      app.status = 'build_failed'
+      app.live_state = 'build_failed'
+    }
+    return json({
+      state: 'failed',
+      phase: 'BUILD',
+      started_at: build.started_at,
+      elapsed_s: elapsed,
+      log_url: consoleUrl(key),
+      log_tail: [...fixtureBuildLog, ...FAILURE_LINES],
+    })
+  }
+
+  if (app) {
+    app.status = 'active'
+    app.live_state = 'asleep'
+  }
+  return json({
+    state: 'succeeded',
+    phase: 'COMPLETED',
+    started_at: build.started_at,
+    elapsed_s: elapsed,
+    log_url: consoleUrl(key),
+    log_tail: [
+      ...fixtureBuildLog,
+      '* DONE (networkD3)',
+      `Successfully tagged shiny-${key}:r1`,
+      '[Container] Phase complete: BUILD State: SUCCEEDED',
+    ],
+  })
+}
+
+const FAILURE_LINES = [
+  "ERROR: dependency ‘StanHeaders’ is not available for package ‘rstan’",
+  '* removing ‘/usr/local/lib/R/site-library/rstan’',
+  'Error: installation of package ‘rstan’ had non-zero exit status',
+  '[Container] Phase complete: BUILD State: FAILED',
+]
+
+const consoleUrl = (key: string) =>
+  `https://us-east-1.console.aws.amazon.com/codesuite/codebuild/652063276768/projects/shiny-app-build/history?region=us-east-1&search=${encodeURIComponent(key)}`
+
+/**
+ * Stands in for the browser's PUT to S3 in mock mode. It fires the same
+ * progress callbacks XHR would, so the upload UI is exercised for real
+ * without a bucket.
+ */
+export async function mockUpload(file: File, options: UploadOptions): Promise<void> {
+  const steps = 12
+  for (let i = 1; i <= steps; i++) {
+    if (options.signal?.aborted) {
+      throw new DOMException('Upload aborted', 'AbortError')
+    }
+    // Bigger files take visibly longer, which is the point of the bar.
+    await new Promise((r) => setTimeout(r, 40 + Math.min(file.size / 2_000_000, 60)))
+    options.onProgress?.(i / steps)
   }
 }

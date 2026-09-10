@@ -67,6 +67,12 @@ class Recorder(Protocol):
     def record(self, event: Event) -> None: ...
 
 
+class BuildSweeper(Protocol):
+    """``provision.BuildWatcher``, narrowed to the one call this loop makes."""
+
+    async def sweep(self, app: App, now: float) -> None: ...
+
+
 class Loop:
     """The sleeper/reaper."""
 
@@ -80,6 +86,7 @@ class Loop:
         *,
         clock: Callable[[], float] = time.time,
         interval: float = INTERVAL,
+        builds: BuildSweeper | None = None,
     ) -> None:
         self._store = store
         self._scaler = scaler
@@ -88,6 +95,10 @@ class Loop:
         self._log = log or logging.getLogger("proxy.sleeper")
         self._clock = clock
         self._interval = interval
+        # None until the P2a creation pipeline is configured. Rows can only
+        # be in `building` if something created them, so with no sweeper
+        # there is nothing to sweep.
+        self._builds = builds
 
     async def run(self) -> None:
         """Tick until cancelled. One bad pass must not end the loop."""
@@ -119,6 +130,16 @@ class Loop:
             if registry.is_config_host(app.host):
                 continue
             try:
+                # Builds first. A row in `building` has no ECS service yet --
+                # describing one would be an error a minute, forever -- and
+                # it is the ONE state that can get stuck with nothing else
+                # watching it. portal-p2a.md: never leave an app "creating"
+                # forever. Success is detected here too, by polling, rather
+                # than by a webhook that would need a public endpoint and an
+                # auth story of its own.
+                if app.status == registry.STATUS_BUILDING:
+                    await self._sweep_build(app, now)
+                    continue
                 if await self._expire(app, now):
                     continue
                 if app.status != registry.STATUS_ACTIVE:
@@ -131,6 +152,22 @@ class Loop:
                     "sleeper: pass failed for app",
                     extra={"host": app.host, "reason": str(exc)},
                 )
+
+    async def _sweep_build(self, app: App, now: float) -> None:
+        """Hand a ``building`` row to the build watcher.
+
+        A configured-away sweeper is logged rather than ignored: a row in
+        `building` with nothing to advance it is exactly the stuck state the
+        45-minute reaper exists to prevent, and if the creation env has been
+        removed from under a live row somebody needs to know.
+        """
+        if self._builds is None:
+            self._log.warning(
+                "an app is building but no build watcher is configured",
+                extra={"host": app.host, "build_id": app.build_id},
+            )
+            return
+        await self._builds.sweep(app, now)
 
     async def _expire(self, app: App, now: float) -> bool:
         """Flip a lapsed app to expired and scale it to zero.

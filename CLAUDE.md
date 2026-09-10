@@ -55,12 +55,22 @@ Select-String -Path plan.txt -Pattern "^Plan:"
 
 Then apply the saved plan file, so what runs is what was reviewed.
 
-**Never remove these `lifecycle` blocks.** The waker and sleeper Lambdas mutate
-both at runtime; Terraform owns their existence, the Lambdas own their state.
-Removing either makes every apply fight the scaler.
+**Never remove these `lifecycle` blocks.** Something mutates each of these at
+runtime; Terraform owns their existence, the runtime owns their state.
+Removing one makes every apply fight the thing that owns it — silently, in
+two of the three cases.
 
-- `aws_lb_listener_rule.this` → `ignore_changes = [action]`
-- `aws_ecs_service.this` → `ignore_changes = [desired_count]`
+- `aws_lb_listener_rule.this` → `ignore_changes = [action]` (app stacks; the
+  waker/sleeper Lambdas swap the target group)
+- `aws_ecs_service.this` → `ignore_changes = [desired_count]` (app stacks;
+  the scaler)
+- `proxy/cognito.tf`'s `aws_cognito_user_pool_client.this` →
+  `ignore_changes = [callback_urls, logout_urls]` (**the portal adds a
+  callback per created app**; without it an apply wipes every wizard-created
+  app's sign-in and reports nothing wrong)
+
+The proxy's own listener rule and service are the exception — nothing mutates
+them, so they deliberately have NO ignore blocks. See the comments there.
 
 **Never introduce `aws_nat_gateway`.** $32.85/month, deliberately avoided. See
 `docs/adr/0004-no-nat-gateway.md`. Check every plan for it.

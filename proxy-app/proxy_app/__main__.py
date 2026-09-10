@@ -18,7 +18,7 @@ from aiohttp import web
 from . import activity as activity_mod
 from . import audit as audit_mod
 from . import config as config_mod
-from . import ecsctl, portal as portal_mod, registry, server, sleeper
+from . import ecsctl, portal as portal_mod, provision, registry, server, sleeper
 
 #: Both short enough that a revoked entitlement or a replaced task is picked up
 #: within seconds, long enough that a page full of assets is one lookup rather
@@ -49,8 +49,22 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
     )
     recorder.start()
 
+    # The P2a creation pipeline. All-or-nothing (config.Creation), so this is
+    # either fully wired or entirely absent -- there is no half-configured
+    # mode in which an app can be half-created.
+    creation = None
+    watcher = None
+    if cfg.creation is not None:
+        creation, watcher = _creation(cfg, boto_session, apps, recorder, log)
+    elif cfg.creation_error:
+        # Deliberately not fatal -- this task is in the request path for every
+        # app, and a misconfigured wizard must not take the platform down.
+        # Loud, though: the alternative is a "+ New app" button that has
+        # quietly stopped appearing and nobody knowing why.
+        log.error(cfg.creation_error)
+
     loop = sleeper.Loop(
-        apps, tasks, tracker, recorder, log.getChild("sleeper")
+        apps, tasks, tracker, recorder, log.getChild("sleeper"), builds=watcher
     )
     loop_task = asyncio.get_running_loop().create_task(loop.run())
 
@@ -64,6 +78,10 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
             admins=portal_mod.AdminList(
                 apps.admin_emails, log=log.getChild("portal")
             ),
+            creators=portal_mod.CreatorList(
+                apps.creator_emails, log=log.getChild("portal")
+            ),
+            creation=creation,
             recorder=recorder,
             audit=audit_mod.DynamoAuditReader(dynamodb, cfg.audit_table),
             dist=cfg.portal_dist,
@@ -106,6 +124,9 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
             "log_level": cfg.log_level,
             "portal_hosts": list(cfg.portal_hosts) or "(portal off)",
             "portal_dist": cfg.portal_dist if cfg.portal_enabled() else "(portal off)",
+            "creation": (
+                cfg.creation.domain if cfg.creation else "(creation off)"
+            ),
         },
     )
 
@@ -118,6 +139,78 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
     await runner.cleanup()
     await recorder.stop()
     await client.close()
+
+
+def _creation(
+    cfg: config_mod.Config,
+    boto_session: "boto3.session.Session",
+    apps: registry.CachedRegistry,
+    recorder: audit_mod.Recorder,
+    log: logging.Logger,
+) -> tuple[provision.Creation, provision.BuildWatcher]:
+    """Wire the P2a pipeline. Five clients, one boundary, no optional bits.
+
+    ``Boto3TaskRoles`` is constructed FIRST and refuses a blank boundary ARN,
+    so a deployment that somehow reached here without one dies at startup
+    rather than at the third step of somebody's first app.
+    """
+    settings = cfg.creation
+    assert settings is not None
+
+    roles = provision.Boto3TaskRoles(
+        boto_session.client("iam"),
+        boundary_arn=settings.role_boundary_arn,
+        data_bucket=settings.data_bucket,
+        log=log.getChild("provision"),
+    )
+    builds = provision.Boto3Builds(
+        boto_session.client("codebuild"),
+        boto_session.client("logs"),
+        settings.codebuild_project,
+        log.getChild("provision"),
+    )
+    provisioner = provision.Provisioner(
+        store=apps,
+        repositories=provision.Boto3Repositories(
+            boto_session.client("ecr"), log.getChild("provision")
+        ),
+        roles=roles,
+        builds=builds,
+        services=provision.Boto3Services(
+            boto_session.client("ecs"),
+            cluster=cfg.cluster,
+            subnets=settings.subnet_ids,
+            security_group=settings.security_group_id,
+            execution_role_arn=settings.execution_role_arn,
+            log_group=settings.log_group,
+            region=cfg.region,
+            roles=roles,
+        ),
+        clients=provision.Boto3Clients(
+            boto_session.client("cognito-idp"),
+            user_pool_id=settings.user_pool_id,
+            client_id=settings.client_id,
+            log=log.getChild("provision"),
+        ),
+        recorder=recorder,
+        domain=settings.domain,
+        log=log.getChild("provision"),
+    )
+    bundle = provision.Creation(
+        domain=settings.domain,
+        uploads=provision.Boto3Uploads(
+            boto_session.client("s3"), settings.uploads_bucket
+        ),
+        provisioner=provisioner,
+        builds=builds,
+        denylist=portal_mod.DenyList(apps.key_denylist, log=log.getChild("portal")),
+        console_region=cfg.region,
+        codebuild_project=settings.codebuild_project,
+    )
+    watcher = provision.BuildWatcher(
+        provisioner=provisioner, builds=builds, log=log.getChild("provision")
+    )
+    return bundle, watcher
 
 
 async def _wait_for_signal() -> None:

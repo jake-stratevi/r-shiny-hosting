@@ -35,7 +35,8 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
-from . import access, audit as audit_mod, identity, pages, registry
+from . import access, audit as audit_mod, identity, pages, provision, registry
+from . import creation as creation_mod
 from .audit import Event
 from .ecsctl import ServiceState
 from .identity import Principal
@@ -59,13 +60,16 @@ ASSETS_PREFIX = "/assets/"
 #: from another origin.
 CSRF_HEADER = "X-Portal-Csrf"
 
-#: The derived states, per the contract. `building` / `build_failed` arrive
-#: with P2's release pipeline; do not add them speculatively.
+#: The derived states, per the contract. `building` / `build_failed` are P2a's
+#: additions -- a row exists from the moment its slug is reserved, minutes
+#: before there is a service to describe.
 LIVE_AWAKE = "awake"
 LIVE_STARTING = "starting"
 LIVE_ASLEEP = "asleep"
 LIVE_DISABLED = "disabled"
 LIVE_EXPIRED = "expired"
+LIVE_BUILDING = "building"
+LIVE_BUILD_FAILED = "build_failed"
 
 #: Statuses the portal may write. `expired` is deliberately absent -- expiry
 #: is the reaper's to declare, from the clock, and an admin who wants an app
@@ -84,11 +88,17 @@ MAX_LABEL_CHARS = 200
 MAX_DESCRIPTION_CHARS = 2000
 MAX_ALLOWED_EMAILS = 500
 
-#: How long the admin list is trusted, and how long a FAILURE to read it is.
-#: The second is much shorter on purpose: a cached success saves reads, but a
-#: cached error locks every admin out of the control plane for its duration.
+#: How long a `__config__` string set is trusted, and how long a FAILURE to
+#: read one is. The second is much shorter on purpose: a cached success saves
+#: reads, but a cached error locks every admin out of the control plane for
+#: its duration.
 ADMIN_TTL = 30.0
 ADMIN_ERROR_TTL = 5.0
+
+#: How many log lines the build screen shows. Enough to see the R error that
+#: killed an install; not so many that a poll every few seconds ships a
+#: megabyte.
+BUILD_LOG_LINES = 50
 
 
 # --- protocols the portal depends on ---------------------------------------
@@ -126,17 +136,36 @@ class AdminSource(Protocol):
     async def is_admin(self, email: str) -> bool: ...
 
 
-# --- who is an admin -------------------------------------------------------
+class CreatorSource(Protocol):
+    async def can_create(self, email: str) -> bool: ...
 
 
-class AdminList:
-    """The ``__config__`` row's ``admin_emails``, cached and fail-closed.
+class CreationLike(Protocol):
+    """The P2a creation collaborator -- ``provision.Creation``."""
 
-    The list is a Terraform-managed ``aws_dynamodb_table_item`` (ADR-0014), so
-    granting yourself admin is a code review, not a console edit. Every way
-    this can go wrong -- no row, a row with no ``admin_emails``, a DynamoDB
-    error, a caller with no resolvable email -- resolves to "not an admin".
+    domain: str
+    uploads: Any
+    provisioner: Any
+    builds: Any
+    denylist: Any
+
+
+# --- who may do what -------------------------------------------------------
+
+
+class ConfigList:
+    """One ``__config__`` string set, cached and fail-closed.
+
+    The sets are Terraform-managed ``aws_dynamodb_table_item`` attributes
+    (ADR-0014), so granting yourself admin -- or the right to create apps --
+    is a code review, not a console edit. Every way a read can go wrong (no
+    row, no attribute, a DynamoDB error, a caller with no resolvable email)
+    resolves to "no".
     """
+
+    #: Named in the warning line, so "the portal is locked" and "creation is
+    #: locked" are distinguishable in CloudWatch at 2am.
+    attribute = registry.CONFIG_ADMIN_EMAILS
 
     def __init__(
         self,
@@ -155,6 +184,15 @@ class AdminList:
         self._cached: frozenset[str] = frozenset()
         self._read_at: float | None = None
         self._cached_ttl = 0.0
+        #: False when the last read RAISED, as opposed to returning nothing.
+        #: An empty membership list and an unreadable one both mean "no" for
+        #: `has()`, but a validator that has to distinguish "this name is
+        #: fine" from "we could not check" needs to tell them apart.
+        self._ok = True
+
+    @property
+    def ok(self) -> bool:
+        return self._ok
 
     async def emails(self) -> frozenset[str]:
         if self._read_at is not None and self._clock() - self._read_at < self._cached_ttl:
@@ -168,29 +206,75 @@ class AdminList:
                 if cleaned
             )
             self._cached_ttl = self._ttl
+            self._ok = True
             if not self._cached:
                 # Not an error, but worth a line: it is the difference between
                 # "the portal is locked" and "the portal is broken".
-                self._log.warning("no admin_emails in the __config__ row")
+                self._log.warning(f"no {self.attribute} in the __config__ row")
         except Exception as exc:
             self._cached = frozenset()
             self._cached_ttl = self._error_ttl
+            self._ok = False
             self._log.warning(
-                "cannot read the admin list; nobody is an admin",
+                f"cannot read {self.attribute}; failing closed",
                 extra={"reason": str(exc)},
             )
 
         self._read_at = self._clock()
         return self._cached
 
-    async def is_admin(self, email: str) -> bool:
+    async def has(self, email: str) -> bool:
         address = (email or "").strip().lower()
         if not address:
             # A federated principal with only a synthetic Cognito username is
-            # authenticated (and may see the menu) but can never be an admin:
-            # there is no address to match against a reviewed list.
+            # authenticated (and may see the menu) but can never be an admin
+            # or a creator: there is no address to match against a reviewed
+            # list.
             return False
         return address in await self.emails()
+
+
+class AdminList(ConfigList):
+    """``__config__.admin_emails``: who may edit apps that already exist."""
+
+    attribute = registry.CONFIG_ADMIN_EMAILS
+
+    async def is_admin(self, email: str) -> bool:
+        return await self.has(email)
+
+
+class CreatorList(ConfigList):
+    """``__config__.creator_emails``: who may put a new hostname on the net.
+
+    A SEPARATE permission from admin, and portal-p2a.md is explicit that
+    admin does not imply it: editing who may open an app that exists is a
+    different act from provisioning IAM, ECR and DNS-visible infrastructure
+    and running an uploaded bundle in it. An admin who is not on this list
+    gets a 403 from every P2a route, and `/me` reports `can_create: false`
+    so the UI hides the affordance rather than dangling one.
+    """
+
+    attribute = registry.CONFIG_CREATOR_EMAILS
+
+    async def can_create(self, email: str) -> bool:
+        return await self.has(email)
+
+
+class DenyList(ConfigList):
+    """``__config__.key_denylist``: substrings banned from a hostname.
+
+    Same machinery, same fail-closed rule, enforced through :attr:`ok`: a
+    read that RAISED must not be reported as "no banned terms matched". A
+    denylist that silently empties itself during a DynamoDB blip is how a
+    client's name ends up in a public hostname, and unlike every other
+    mistake in this pipeline that one cannot be taken back -- the name has
+    already been in DNS and in somebody's browser history.
+    """
+
+    attribute = registry.CONFIG_KEY_DENYLIST
+
+    async def terms(self) -> frozenset[str]:
+        return await self.emails()
 
 
 # --- derived state ---------------------------------------------------------
@@ -203,7 +287,16 @@ def live_state(app: App, state: ServiceState | None, now: float) -> str:
     status attribute -- the same rule the access decision uses, so the portal
     never shows "asleep" for an app that has in fact just lapsed and is being
     refused at the door.
+
+    The two P2a states come FIRST, ahead of even expiry: a row that is still
+    building has no service to describe and no meaningful expiry yet, and
+    "asleep" for an app whose container does not exist would send a creator
+    to click a link that 403s.
     """
+    if app.status == registry.STATUS_BUILDING:
+        return LIVE_BUILDING
+    if app.status == registry.STATUS_BUILD_FAILED:
+        return LIVE_BUILD_FAILED
     if app.status == registry.STATUS_EXPIRED or app.is_expired(now):
         return LIVE_EXPIRED
     if app.status == registry.STATUS_DISABLED:
@@ -400,6 +493,8 @@ class Portal:
         admins: AdminSource,
         recorder: RecorderLike,
         audit: AuditSource | None = None,
+        creators: CreatorSource | None = None,
+        creation: CreationLike | None = None,
         dist: str | Path | None = None,
         log: logging.Logger | None = None,
         clock: Callable[[], float] = time.time,
@@ -409,6 +504,14 @@ class Portal:
         self._admins = admins
         self._recorder = recorder
         self._audit = audit
+        # Two separate collaborators on purpose: `creators` is the
+        # PERMISSION (a `__config__` set, live the moment Terraform writes
+        # it) and `creation` is the PIPELINE (env-driven, absent until the
+        # P2a stack is applied). Someone can be a creator before there is
+        # anything to create with, and the two failure messages are
+        # different: 403 versus 503.
+        self._creators = creators
+        self._creation = creation
         self._dist = Path(dist).resolve() if dist else None
         self._log = log or logging.getLogger("proxy.portal")
         self._clock = clock
@@ -445,6 +548,12 @@ class Portal:
             return await self._me(request, principal)
         if rest in ("/menu", "/menu/"):
             return await self._menu(request, principal)
+        if rest in ("/uploads", "/uploads/"):
+            return await self._upload_url(request, principal)
+        # Matched BEFORE the `/apps/{host}` dispatcher, which would otherwise
+        # read "validate-key" as a hostname and 404 it.
+        if rest in ("/apps/validate-key", "/apps/validate-key/"):
+            return await self._validate_key(request, principal)
         if rest in ("/apps", "/apps/"):
             return await self._apps_list(request, principal)
         if rest.startswith("/apps/"):
@@ -460,6 +569,9 @@ class Portal:
             {
                 "email": principal.email,
                 "is_admin": await self._admins.is_admin(principal.email),
+                # Independent of is_admin, both ways: a creator need not be
+                # an admin, and an admin is not a creator by default.
+                "can_create": await self._may_create(principal),
             },
         )
 
@@ -494,6 +606,8 @@ class Portal:
     async def _apps_list(
         self, request: web.Request, principal: Principal
     ) -> web.Response:
+        if request.method == "POST":
+            return await self._create_app(request, principal)
         if request.method not in ("GET", "HEAD"):
             return _error(405, "method not allowed")
         refused = await self._require_admin(principal)
@@ -524,11 +638,11 @@ class Portal:
         registers exactly one catch-all route: every host and every path
         reaches one handler, and adding a second router for one hostname
         would put two different route tables in the request path.
-        """
-        refused = await self._require_admin(principal)
-        if refused is not None:
-            return refused
 
+        The path is parsed BEFORE the gate, because the two gates differ:
+        ``/build`` is a P2a route and wants creator permission (an admin
+        alone is 403, per the contract), everything else wants admin.
+        """
         segments = [unquote(part) for part in tail.split("/") if part]
         if not segments or len(segments) > 2:
             return _error(404, "no such endpoint")
@@ -538,6 +652,18 @@ class Portal:
             # `__config__` is configuration, not an app, and must not be
             # editable through the app API.
             return _error(404, "no such application")
+
+        if len(segments) == 2 and segments[1] == "build":
+            if request.method not in ("GET", "HEAD"):
+                return _error(405, "method not allowed")
+            refused = await self._require_creator(principal)
+            if refused is not None:
+                return refused
+            return await self._build_status(host)
+
+        refused = await self._require_admin(principal)
+        if refused is not None:
+            return refused
 
         if len(segments) == 2:
             if segments[1] != "audit":
@@ -647,7 +773,257 @@ class Portal:
             200, {"events": events, "cursor": audit_mod.encode_cursor(last_key)}
         )
 
+    # --- P2a: creation -----------------------------------------------------
+
+    async def _validate_key(
+        self, request: web.Request, principal: Principal
+    ) -> web.Response:
+        """Is this key available? Always 200 -- it is a form affordance.
+
+        No CSRF header required, and deliberately: this mutates nothing and
+        discloses nothing a caller did not already supply. Every other P2a
+        route does require it.
+        """
+        if request.method != "POST":
+            return _error(405, "method not allowed")
+
+        refused = await self._require_creator(principal)
+        if refused is not None:
+            return refused
+        assert self._creation is not None  # _require_creator checked
+
+        body = await _body(request)
+        if body is _BAD_JSON:
+            return _error(400, "body must be a JSON object")
+        if not isinstance(body, dict):
+            return _error(400, "body must be a JSON object")
+
+        key = body.get("key")
+        reason = await self._key_problem(key)
+        if reason is not None:
+            return _json(200, {"ok": False, "reason": reason})
+
+        return _json(
+            200,
+            {"ok": True, "host": creation_mod.host_for(str(key).strip(), self._creation.domain)},
+        )
+
+    async def _upload_url(
+        self, request: web.Request, principal: Principal
+    ) -> web.Response:
+        """A presigned PUT for the bundle. The API never proxies the bytes."""
+        if request.method != "POST":
+            return _error(405, "method not allowed")
+
+        refused = await self._require_creator(principal)
+        if refused is not None:
+            return refused
+        assert self._creation is not None
+
+        # CSRF matters more here than anywhere else in the portal: without
+        # it, a page on another origin could make the victim's browser mint
+        # a write grant into our bucket.
+        if not request.headers.get(CSRF_HEADER, "").strip():
+            return _error(403, f"missing {CSRF_HEADER} header")
+
+        body = await _body(request)
+        if body is _BAD_JSON:
+            return _error(400, "body must be a JSON object")
+
+        try:
+            filename, size = creation_mod.validate_upload(body)
+        except creation_mod.CreateError as exc:
+            # Checked BEFORE anything is issued: an over-size bundle must be
+            # a legible 400, not an S3 rejection the browser reports as an
+            # opaque CORS error twenty minutes into an upload.
+            return _error(400, str(exc))
+
+        upload_key = self._creation.uploads.new_key()
+        try:
+            url = self._creation.uploads.presign(upload_key)
+        except Exception as exc:
+            self._log.error("cannot presign an upload", extra={"reason": str(exc)})
+            return _error(503, "the upload could not be prepared")
+
+        self._log.info(
+            "upload url issued",
+            # NOT `filename`: logging reserves that attribute on a LogRecord
+            # and an `extra` that collides with one raises at the call site.
+            extra={"email": principal.email, "key": upload_key,
+                   "bundle": filename, "size": size},
+        )
+        return _json(
+            200,
+            {
+                "upload_key": upload_key,
+                "url": url,
+                "expires_in": provision.UPLOAD_URL_SECONDS,
+            },
+        )
+
+    async def _create_app(
+        self, request: web.Request, principal: Principal
+    ) -> web.Response:
+        """The whole wizard, validated and then provisioned. 202 on success."""
+        refused = await self._require_creator(principal)
+        if refused is not None:
+            return refused
+        assert self._creation is not None
+
+        if not request.headers.get(CSRF_HEADER, "").strip():
+            return _error(403, f"missing {CSRF_HEADER} header")
+
+        body = await _body(request)
+        if body is _BAD_JSON:
+            return _error(400, "body must be a JSON object")
+
+        try:
+            spec = creation_mod.validate_create(body)
+        except creation_mod.CreateError as exc:
+            return _error(400, str(exc))
+
+        # The availability check again, server-side. The wizard's live check
+        # is a courtesy; this is the one that counts -- and it is still not
+        # the mutex. That is the conditional put below.
+        reason = await self._key_problem(spec.key)
+        if reason is not None:
+            return _error(400, reason)
+
+        try:
+            created = await self._creation.provisioner.create(spec, principal.email)
+        except registry.HostTaken:
+            # Two wizards, one key, one winner. The loser provisioned
+            # nothing: the conditional put is the first step for exactly
+            # this reason.
+            return _error(409, "that name was taken while you were submitting")
+        except provision.ProvisionError as exc:
+            # The row is already `build_failed` with the reason recorded, and
+            # whatever was created is left for inspection (portal-p2a.md).
+            return _error(503, f"the app could not be provisioned: {exc}")
+        except Exception as exc:
+            self._log.error(
+                "create failed", extra={"email": principal.email, "reason": str(exc)}
+            )
+            return _error(503, "the app could not be created")
+
+        return _json(202, app_json(created, None, self._clock()))
+
+    async def _build_status(self, host: str) -> web.Response:
+        """Build state for the wizard's build screen.
+
+        Honest rather than reassuring (portal-p2a.md: "Do not fake a
+        progress bar"): the CodeBuild phase, the elapsed seconds, a console
+        deep link, and the tail of the log. The tail is best effort -- a
+        build screen with no tail beats a 503.
+        """
+        assert self._creation is not None
+
+        app, failure = await self._load(host)
+        if failure is not None:
+            return failure
+        assert app is not None
+
+        started = app.build_started_at or app.created_at
+        payload: dict[str, Any] = {
+            "state": _build_state(app.status),
+            "phase": "",
+            "started_at": started or None,
+            "elapsed_s": max(0, int(self._clock() - started)) if started else 0,
+            "log_url": self._creation.build_console_url(app.build_id)
+            if hasattr(self._creation, "build_console_url")
+            else "",
+            "log_tail": [],
+        }
+        if app.build_error:
+            payload["reason"] = app.build_error
+
+        if not app.build_id:
+            return _json(200, payload)
+
+        try:
+            status = await self._creation.builds.status(app.build_id)
+        except Exception as exc:
+            # The row's own status still answers the question well enough to
+            # render a screen; only the phase and the tail are missing.
+            self._log.warning(
+                "cannot read build status",
+                extra={"host": host, "build_id": app.build_id, "reason": str(exc)},
+            )
+            return _json(200, payload)
+
+        payload["phase"] = status.phase
+        if status.started_at:
+            payload["started_at"] = status.started_at
+            payload["elapsed_s"] = max(0, int(self._clock() - status.started_at))
+        if status.log_url:
+            payload["log_url"] = status.log_url
+        # CodeBuild is the fresher answer while a build is live; the row only
+        # catches up on the next sweep, up to a minute later.
+        if app.status == registry.STATUS_BUILDING and status.finished():
+            payload["state"] = "succeeded" if status.succeeded() else "failed"
+
+        try:
+            payload["log_tail"] = await self._creation.builds.log_tail(
+                status, BUILD_LOG_LINES
+            )
+        except Exception as exc:  # pragma: no cover - log_tail is best effort
+            self._log.warning("cannot read build logs", extra={"reason": str(exc)})
+
+        return _json(200, payload)
+
+    async def _key_problem(self, key: Any) -> str | None:
+        """``None`` when the key may be used, otherwise the human reason."""
+        assert self._creation is not None
+
+        denylist = self._creation.denylist
+        terms = await denylist.emails()
+        if not getattr(denylist, "ok", True):
+            # An unreadable denylist must never read as "nothing matched".
+            # See DenyList's docstring: a name that reaches DNS cannot be
+            # taken back.
+            return "name checks are temporarily unavailable -- try again in a moment"
+
+        try:
+            rows = await self._apps.apps()
+        except Exception as exc:
+            self._log.error("cannot check key availability", extra={"reason": str(exc)})
+            return "name checks are temporarily unavailable -- try again in a moment"
+
+        taken = creation_mod.reserved_labels(
+            (row.host for row in rows), (row.app_key for row in rows)
+        )
+        return creation_mod.check_key(key, taken=taken, denylist=terms)
+
     # --- shared helpers ----------------------------------------------------
+
+    async def _may_create(self, principal: Principal) -> bool:
+        if self._creators is None:
+            return False
+        try:
+            return await self._creators.can_create(principal.email)
+        except Exception as exc:  # pragma: no cover - the list fails closed itself
+            self._log.warning(
+                "cannot resolve create permission", extra={"reason": str(exc)}
+            )
+            return False
+
+    async def _require_creator(self, principal: Principal) -> web.Response | None:
+        """``None`` when the caller may create, otherwise the refusal.
+
+        Two different refusals, deliberately: 403 means "you personally may
+        not" and 503 means "nobody can yet, the pipeline is not deployed".
+        Collapsing them would have a creator reading a permissions error
+        during the window before the P2a Terraform is applied.
+        """
+        if not await self._may_create(principal):
+            self._log.info(
+                "portal create refused",
+                extra={"email": principal.email, "sub": principal.sub},
+            )
+            return _error(403, "you are not permitted to create applications")
+        if self._creation is None:
+            return _error(503, "app creation is not configured on this deployment")
+        return None
 
     async def _require_admin(self, principal: Principal) -> web.Response | None:
         """``None`` when the caller may proceed, otherwise the 403 to send."""
@@ -737,6 +1113,33 @@ class Portal:
         return None
 
 
+# --- request bodies --------------------------------------------------------
+
+#: Sentinel: the body was not JSON at all, which is a different 400 from "the
+#: JSON was JSON but wrong". A module-level object rather than an exception
+#: so the read stays one line at every call site.
+_BAD_JSON = object()
+
+
+async def _body(request: web.Request) -> Any:
+    try:
+        return json.loads(await request.text() or "null")
+    except (ValueError, UnicodeDecodeError):
+        return _BAD_JSON
+
+
+#: Row status -> the contract's build states. `active` is what a finished
+#: build looks like from the row's side.
+_BUILD_STATES = {
+    registry.STATUS_BUILDING: "building",
+    registry.STATUS_BUILD_FAILED: "failed",
+}
+
+
+def _build_state(status: str) -> str:
+    return _BUILD_STATES.get(status, "succeeded")
+
+
 # --- responses -------------------------------------------------------------
 
 
@@ -797,6 +1200,11 @@ __all__ = [
     "API_PREFIX",
     "AdminList",
     "CSRF_HEADER",
+    "ConfigList",
+    "CreatorList",
+    "DenyList",
+    "LIVE_BUILDING",
+    "LIVE_BUILD_FAILED",
     "PatchError",
     "Portal",
     "app_json",

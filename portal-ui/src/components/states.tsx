@@ -141,6 +141,27 @@ export function NoAdminAccess() {
   )
 }
 
+/**
+ * 403 from anything under the P2a creation routes. A separate card from the
+ * admin one on purpose: portal-p2a.md makes creation its own permission, so
+ * "you're not an admin" would be the wrong — and possibly false — reason.
+ */
+export function NoCreateAccess() {
+  return (
+    <div className="mx-auto max-w-lg rounded-card border border-line bg-surface px-10 py-12 text-center shadow-card">
+      <h2 className="text-base font-semibold text-ink">You can’t create apps</h2>
+      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted">
+        Creating an app is its own permission, separate from admin — a new app
+        gets its own hostname, container and credentials, so the list of people
+        who may make one is kept short and lives in Terraform.
+      </p>
+      <div className="mt-6 flex justify-center">
+        <ButtonLink href="/">Back to your tools</ButtonLink>
+      </div>
+    </div>
+  )
+}
+
 /** Any other failure. Renders the API's own `{error}` text when there is one. */
 export function ErrorState({
   error,

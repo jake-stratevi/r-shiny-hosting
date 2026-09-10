@@ -54,6 +54,17 @@ resource "aws_cloudwatch_log_group" "app" {
   retention_in_days = local.log_retention_days
 }
 
+# ONE log group shared by every portal-created app, streams separated by the
+# app key. Terraform owns it rather than the portal because a log group is
+# the one piece of a created app that must OUTLIVE it: if the portal made
+# the group and a delete removed it, the logs explaining why an app died
+# would go with it. It also keeps the boundary policy's log-write grant
+# (boundary.tf) matchable by a single ARN pattern.
+resource "aws_cloudwatch_log_group" "apps" {
+  name              = "/ecs/${var.project}/apps"
+  retention_in_days = local.log_retention_days
+}
+
 resource "aws_ecs_task_definition" "this" {
   family                   = local.name
   requires_compatibilities = ["FARGATE"]
@@ -92,6 +103,41 @@ resource "aws_ecs_task_definition" "this" {
       { name = "PORT", value = tostring(var.container_port) },
       { name = "LOG_LEVEL", value = var.log_level },
       { name = "PORTAL_HOSTS", value = join(",", local.portal_hosts) },
+
+      # --- P2a pipeline (docs/design/portal-p2a.md) ---------------------
+      # The four handles the creation wizard needs. Each corresponds to a
+      # grant on the task role (iam.tf); if one of these is empty the
+      # portal must refuse to create rather than guess a name.
+      { name = "UPLOADS_BUCKET", value = aws_s3_bucket.uploads.id },
+      { name = "CODEBUILD_PROJECT", value = aws_codebuild_project.app_build.name },
+      { name = "APP_ROLE_BOUNDARY_ARN", value = aws_iam_policy.app_boundary.arn },
+
+      # NAME ONLY -- this bucket does not exist yet. Moving app data out of
+      # container images into S3 is a later change (ADR-0010's consequences;
+      # portal.md defers the data-upload UI). The value is the name it WILL
+      # have, so the per-app inline role policy the portal writes today
+      # already points at the right prefix and nothing has to be reissued
+      # when the bucket lands. Anything that tries to READ from it before
+      # then gets NoSuchBucket, which is the correct, loud failure.
+      { name = "APP_DATA_BUCKET", value = local.app_data_bucket },
+
+      # What a created app's ECS service is made OF. The portal registers a
+      # task definition and creates a service through the SDK (ADR-0012), so
+      # it needs the same handles this stack uses for its own service. All
+      # already exist here -- only APP_LOG_GROUP is new.
+      #
+      # config.py treats the whole creation block as all-or-nothing: if any
+      # of these is blank the wizard is disabled and its routes answer 503,
+      # rather than the task refusing to boot. That is deliberate -- this
+      # container is in the request path for every app on the platform, and
+      # a misconfigured wizard must never take the dashboard down with it.
+      { name = "APP_DOMAIN", value = data.aws_ssm_parameter.domain_name.value },
+      { name = "APP_SUBNET_IDS", value = join(",", local.subnet_ids) },
+      { name = "APP_SECURITY_GROUP_ID", value = data.aws_ssm_parameter.task_security_group_id.value },
+      { name = "APP_EXECUTION_ROLE_ARN", value = data.aws_ssm_parameter.task_execution_role_arn.value },
+      { name = "APP_LOG_GROUP", value = aws_cloudwatch_log_group.apps.name },
+      { name = "COGNITO_USER_POOL_ID", value = data.aws_ssm_parameter.cognito_user_pool_id.value },
+      { name = "COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.this.id },
     ]
 
     logConfiguration = {

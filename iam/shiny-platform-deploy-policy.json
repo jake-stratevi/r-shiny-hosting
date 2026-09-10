@@ -90,6 +90,40 @@
       "Resource": "*"
     },
     {
+      "Sid": "AppImageBuilds",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:*"
+      ],
+      "Resource": "arn:aws:codebuild:us-east-1:652063276768:project/shiny-*"
+    },
+    {
+      "Sid": "ListBuildProjects",
+      "Effect": "Allow",
+      "Action": [
+        "codebuild:ListProjects",
+        "codebuild:ListBuilds"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageProjectPolicies",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:DeletePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions",
+        "iam:CreatePolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:TagPolicy",
+        "iam:UntagPolicy",
+        "iam:ListEntitiesForPolicy"
+      ],
+      "Resource": "arn:aws:iam::652063276768:policy/shiny-*"
+    },
+    {
       "Sid": "ObservabilityAndConfig",
       "Effect": "Allow",
       "Action": [

@@ -37,6 +37,24 @@ EVENT_FORCE_SLEEP = "force_sleep"
 #: identical edits a second apart are two decisions somebody made.
 EVENT_CONFIG_CHANGE = "config_change"
 
+#: --- P2a creation (docs/design/portal-p2a.md) -----------------------------
+#: One event per state transition, so the trail answers "who put this
+#: hostname on the internet, when, and did it work" without reading logs.
+#: None of them are ever deduplicated -- each is a distinct thing that
+#: happened once, and a creation attempted twice is two attempts.
+#:
+#: `app_created` carries the creator's email; the build events carry it too
+#: where the row remembers it, because the build outcome arrives on a
+#: background loop with no request and no caller of its own.
+EVENT_APP_CREATED = "app_created"
+EVENT_BUILD_STARTED = "build_started"
+EVENT_BUILD_SUCCEEDED = "build_succeeded"
+EVENT_BUILD_FAILED = "build_failed"
+#: Distinct from `build_failed`: the image built fine (or was never reached)
+#: and a provisioning API call -- ECR, IAM, the task definition, the service,
+#: the Cognito callback -- is what went wrong. Different fix, different event.
+EVENT_PROVISION_FAILED = "provision_failed"
+
 #: Allow events are collapsed per host+email for this long. A single Shiny
 #: page load is dozens of asset requests by the same person to the same host;
 #: a row for each would turn "cents of DynamoDB" into real money and make the

@@ -109,6 +109,63 @@ happen behind the ALB).
 - `/assets/*` served immutable (1 year); `index.html` is `no-store`; a
   missing asset is a 404, never the SPA fallback.
 
-## Out of P1 scope (do not stub half-built)
-POST /apps (creation), releases, uploads, reminders, purge. The API grows in
-P2; nothing in P1 should block those additions.
+## P2a additions — creation (see portal-p2a.md)
+
+`GET /me` gains `can_create` (bool, from `__config__.creator_emails`;
+independent of `is_admin`). Every route below requires creator permission —
+admin alone is 403 — and the CSRF header on mutating calls.
+
+### POST /api/v1/apps/validate-key
+Body `{ "key": "tarpeyo-uptake" }` → `{ "ok": true, "host":
+"tarpeyo-uptake.tools.stratevi.com" }` or `{ "ok": false, "reason":
+"<human message>" }`. Checks shape, reserved names, `key_denylist`, and
+collision with an existing row. 200 either way — this is a form affordance,
+not an error.
+
+### POST /api/v1/uploads
+Body `{ "filename": "app.zip", "size": 12345678 }` → `{ "upload_key":
+"uploads/<uuid>.zip", "url": "<presigned PUT>", "expires_in": 900 }`.
+Rejects over-size before issuing a URL. The browser PUTs the zip directly
+to S3; the API never proxies bytes. **Only Bucket and Key are signed** — the
+client must NOT send a `Content-Type` header, or the signature won't match.
+
+### Bundle inspection is CLIENT-SIDE — there is no inspect endpoint
+
+portal-p2a.md requires the wizard to show the detected entrypoint and
+resolved package list back for confirmation, and never to guess silently.
+The obvious shape for that is a server route that reads the uploaded zip —
+**deliberately rejected.** The proxy task is in the request path for every
+app on the platform; making it download and unzip a 100 MB bundle would put
+other people's page loads behind that work, on 0.25 vCPU. A router should
+not become a worker.
+
+The browser already holds the bytes, so it inspects them locally *before*
+uploading: read the zip index, find the entrypoint (`app.R`, or
+`ui.R`+`server.R`, at root or in exactly one wrapper directory), then
+resolve packages from `renv.lock`, else `packages.txt`, else by scanning
+`library()`/`require()` calls. The user confirms the resulting list, and it
+is sent as `packages` on `POST /apps`.
+
+This is a UX affordance, not a security control, and nothing downstream
+trusts it: CodeBuild's `validate.py` re-checks the bundle server-side
+(zip-slip, symlinks, entry count, extracted size, entrypoint) and is the
+only authority. A client that lies gets a failed build, not a bad app.
+
+### POST /api/v1/apps
+Body: `key`, `label`, `description`, `cpu`/`memory` (one of the two allowed
+sizes), `upload_key`, `access_mode`, `allowed_emails`, `idle_minutes`,
+`max_session_hours`, `expires_at` (epoch or null — must be *explicitly*
+present, no default), `packages` (the confirmed list). Validates the bundle,
+reserves the row conditionally, provisions, starts the build. **202** with
+the app object (`status: building`). Conflict on the key → **409**.
+
+### GET /api/v1/apps/{host}/build
+`{ "state": "building|succeeded|failed", "phase": "<CodeBuild phase>",
+"started_at": <epoch>, "elapsed_s": 123, "log_url": "<console deep link>",
+"log_tail": ["…"] }`. Poll while `live_state` is `building`.
+
+New `live_state` values: `building`, `build_failed`. Renderers must already
+tolerate unknown values (P1 rule), so this is additive.
+
+## Out of P2a scope (do not stub half-built)
+Releases/version history, rollback, delete/purge, reminders. P2b.

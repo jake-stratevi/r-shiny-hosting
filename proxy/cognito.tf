@@ -22,14 +22,19 @@ resource "aws_cognito_user_pool_client" "this" {
 
   supported_identity_providers = ["COGNITO", data.aws_ssm_parameter.oidc_provider_name.value]
 
+  # The retired menu host is included on purpose -- see the comment on
+  # local.retired_portal_fqdn in data.tf. It buys a branded 404 instead of a
+  # Cognito error for anyone with an old bookmark; it grants no access.
   callback_urls = distinct(concat(
     [for host in var.app_hosts : "https://${host}/oauth2/idpresponse"],
     [for host in local.portal_hosts : "https://${host}/oauth2/idpresponse"],
+    ["https://${local.retired_portal_fqdn}/oauth2/idpresponse"],
   ))
 
   logout_urls = distinct(concat(
     [for host in var.app_hosts : "https://${host}"],
     [for host in local.portal_hosts : "https://${host}"],
+    ["https://${local.retired_portal_fqdn}"],
   ))
 
   explicit_auth_flows = [
@@ -45,6 +50,29 @@ resource "aws_cognito_user_pool_client" "this" {
     access_token  = "hours"
     id_token      = "hours"
     refresh_token = "hours"
+  }
+
+  # ---------------------------------------------------------------------
+  # NEVER REMOVE THIS. Same law as the app stacks' listener-rule and
+  # desired_count ignores (CLAUDE.md): Terraform owns this client's
+  # EXISTENCE and settings, the runtime owns these two lists.
+  #
+  # From P2a on, the portal adds a callback and logout URL to this client
+  # every time someone creates an app (docs/design/portal-p2a.md,
+  # provisioning step 5 -- it is a read-modify-write against
+  # UpdateUserPoolClient). Terraform only knows about the hosts in
+  # var.app_hosts and the portal hosts, so without this block the next
+  # `terraform apply` quietly resets the lists and every app created
+  # through the wizard loses its sign-in -- with no error, and a diff
+  # nobody reads twice.
+  #
+  # The cost of the ignore is that adding a host to var.app_hosts no
+  # longer does anything on its own; for a proxied app the portal is the
+  # thing that registers it. That is the correct division: apps are
+  # runtime data now, not infrastructure.
+  # ---------------------------------------------------------------------
+  lifecycle {
+    ignore_changes = [callback_urls, logout_urls]
   }
 }
 
