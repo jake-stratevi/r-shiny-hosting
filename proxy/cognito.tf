@@ -47,3 +47,22 @@ resource "aws_cognito_user_pool_client" "this" {
     refresh_token = "hours"
   }
 }
+
+# ---------------------------------------------------------------------------
+# MANUAL STEP THAT TERRAFORM CANNOT DO YET (provider 5.100 lacks
+# aws_cognito_managed_login_branding; it arrives in a later major).
+#
+# The Hub pool uses Managed Login (the branded hosted UI). Every client MUST
+# have a branding-style association or its /login renders "Login pages
+# unavailable. Please contact an administrator." -- which is exactly how this
+# client failed on first use. The per-app clients carry a defaults-only
+# association; this client needs the same. After creating (or ever
+# RECREATING) this client, run:
+#
+#   aws cognito-idp create-managed-login-branding `
+#     --user-pool-id <pool id> --client-id <this client's id> `
+#     --use-cognito-provided-values
+#
+# When the provider is upgraded past the resource's introduction, replace
+# this comment with the real resource and import the association.
+# ---------------------------------------------------------------------------

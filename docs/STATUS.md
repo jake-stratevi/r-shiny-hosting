@@ -40,11 +40,20 @@ different email per identity provider, the same person appears twice in
 allowlists (`@stratevi.com` native + `@assembledintelligence.co.uk` federated)
 — keep both listed everywhere or the Microsoft365 sign-in path gets refused.
 
-**Dashboard stack. Deployed and in use.**
-`shiny-dashboard` service ACTIVE (verified 2026-09-09, desired 1 / running 1).
-Image pushed to ECR 2026-09-08, tag `latest`. Live at
-https://dashboard.tools.stratevi.com. **The sleep cycle has been observed
-working** — the cost model in ADR-0002 is validated.
+**Dashboard stack. Deployed, in use — and MIGRATED TO THE PROXY (2026-09-09,
+`proxied = true`).** The full lifecycle was verified live on a rehearsal host
+and then on the real hostname: proxy `wake` on request (branded starting
+page), `allow` with the caller's email in the audit table, server-side `sleep`
+after 15 idle minutes with no heartbeat involved. The legacy machinery (both
+listener rules, both target groups, waker/sleeper Lambdas, per-app Cognito
+client, CloudWatch alarm + dashboard) is destroyed; the proxy is the only
+scaler. Its row in `shiny-proxy-apps` carries the 8-address allowlist,
+`idle_minutes = 15`, `max_session_hours = 12`. Users re-authenticate once
+(new shared auth client); pre-warm no longer exists (~$7.60/month saved,
+first morning visitor sees the ~30–60s starting page instead). The heartbeat
+snippet is still in the image — harmless, remove at next rebuild
+(ADR-0006 is retired for this app). **Soak period: watch
+`shiny-proxy-audit` and awake-hours for a few days before migrating model.**
 
 **Portal stack. Deployed and in use.**
 Live at https://dashboards.tools.stratevi.com (verified 2026-09-09: 302 to the
@@ -58,10 +67,13 @@ ADR-0013.
 `shiny-proxy` service ACTIVE, 1/1, healthy behind the ALB on the catch-all
 listener rule at priority 5000. Wildcard DNS for app hostnames is live, the
 image is pushed, and both DynamoDB tables it depends on exist:
-`shiny-proxy-apps` (routing) and `shiny-proxy-audit` (per-request log). No
-apps have been cut over to it yet — see [RUNBOOK.md](../RUNBOOK.md#proxy-operations)
+`shiny-proxy-apps` (routing) and `shiny-proxy-audit` (per-request log).
+**dashboard is cut over to it** (see the dashboard entry above); model
+follows once its image exists. See [RUNBOOK.md](../RUNBOOK.md#proxy-operations)
 for the migration checklist and [ADR-0014](adr/0014-standalone-control-plane.md)
-for why it exists.
+for why it exists. Gotcha that bit once already: any NEW client in the Hub
+pool needs a managed-login branding association or its login page refuses to
+render — see GOTCHAS.md and the comment in proxy/cognito.tf.
 
 ## Broken right now
 

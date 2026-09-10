@@ -115,3 +115,12 @@ that cannot feed them. Read `SHINY_CPU_WORKERS` from the environment instead.
 **A Shiny websocket generates zero HTTP requests.** Any idle detection based on
 request-count metrics will see an actively-used app as idle. See
 [ADR-0006](adr/0006-heartbeat-idle-detection.md).
+
+**A new Cognito app client in a Managed Login pool shows "Login pages
+unavailable. Please contact an administrator."** Not a permissions problem and
+not a callback-URL problem -- the Hub pool uses Managed Login (the branded
+hosted UI), and every client needs a branding-style association before its
+/login will render at all. Terraform (provider 5.x) cannot create one; after
+creating or recreating a client, run
+`aws cognito-idp create-managed-login-branding --user-pool-id <pool>
+--client-id <client> --use-cognito-provided-values`. See proxy/cognito.tf.
