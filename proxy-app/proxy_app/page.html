@@ -40,6 +40,12 @@ $refresh
   @media (prefers-reduced-motion: reduce) {
     .bar span { animation: none; width: 100%; opacity: .35; }
   }
+  .action {
+    display: inline-block; margin: 8px 0 0; padding: 9px 16px;
+    border-radius: 6px; background: #3b6ce4; color: #fff;
+    font-size: 14px; font-weight: 500; text-decoration: none;
+  }
+  .action:hover { background: #2f59c0; }
   .foot {
     margin: 24px 0 0; padding-top: 16px; border-top: 1px solid #eef1f6;
     font-size: 12px; color: #8a93a8;
@@ -52,6 +58,7 @@ $refresh
     $bar
     $paragraphs
     $mono
+    $link
     <p class="foot">Stratevi</p>
   </main>
 </body>

@@ -89,8 +89,29 @@ are the portal phase's job, not the proxy's.
 
 **Pages.** Minimal branded HTML (Stratevi design system, NOT Assembled
 Intelligence): starting-up, 401 not-signed-in (shouldn't occur behind ALB
-auth), 403 no-access, 410 expired, 404 unknown host, 503 app-unhealthy.
-Packaged with the app, no external assets.
+auth), 403 no-access, 410 expired, 404 unknown host, 503 app-unhealthy,
+and the signed-out page. Packaged with the app, no external assets.
+
+**Sign-out** (`/__proxy/logout` on portal hosts) has to do two things or it
+silently does nothing: expire **every** `AWSELBAuthSessionCookie-N` shard
+(federated claims are large enough to split across several — leave one and
+the ALB re-authenticates from its own session), then redirect through
+Cognito's hosted-UI `/logout` to end that session too.
+
+The landing page is the subtle part. Every listener rule authenticates
+first, so a just-signed-out visitor sent anywhere normal is bounced into
+Cognito — and with the session just ended, a federated user clears the
+login page in one click and is back in, making sign-out look broken. So
+`/__proxy/signed-out` has **its own listener rule at priority 4900 with no
+authenticate action** — the only unauthenticated rule on the listener. It
+is kept safe by being an exact path (not a prefix) under the `/__proxy/`
+prefix that is reserved on every host, serving static HTML with no identity
+in it. See the banner in `proxy/alb.tf`.
+
+The page states plainly that the Microsoft session is still active, because
+it is: ending the Cognito session does not end Entra's. Chaining Entra's
+`end_session_endpoint` would, but it signs the person out of Outlook and
+Teams too — wrong default for an internal tool.
 
 ## Contract details (settled during the first build — normative)
 

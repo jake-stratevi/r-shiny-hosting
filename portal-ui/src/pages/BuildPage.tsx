@@ -51,7 +51,7 @@ export function BuildPage() {
       <nav className="mb-4">
         <Link
           to="/admin"
-          className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-azure"
         >
           <ArrowLeftIcon className="h-4 w-4" />
           All apps
@@ -89,32 +89,32 @@ function BuildingState({ status }: { status: BuildStatus }) {
 
   return (
     <div className="space-y-5">
-      <div className="rounded-card border border-amber-200 bg-amber-50/70 px-5 py-4">
+      <div className="rounded-lg border border-amber-200 dark:border-amber-400/25 bg-amber-50/70 dark:bg-amber-400/10 px-5 py-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-amber-300 border-t-amber-700" />
+            <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-amber-300 dark:border-amber-400/30 border-t-amber-700 dark:border-t-amber-400" />
             <div>
-              <p className="text-sm font-semibold text-amber-900">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
                 Phase: <span className="font-mono">{status.phase || 'starting'}</span>
               </p>
-              <p className="mt-0.5 text-sm text-amber-900/90">
+              <p className="mt-0.5 text-sm text-amber-900/90 dark:text-amber-200/90">
                 First builds take 10–20 minutes, because every R package is compiled
                 from source.
               </p>
             </div>
           </div>
           <div className="text-right">
-            <p className="text-[11px] uppercase tracking-wide text-amber-900/70">
+            <p className="text-[11px] uppercase tracking-wide text-amber-900/70 dark:text-amber-200/70">
               Elapsed
             </p>
-            <p className="font-mono text-lg font-semibold tabular-nums text-amber-900">
+            <p className="font-mono text-lg font-semibold tabular-nums text-amber-900 dark:text-amber-200">
               {formatElapsed(elapsed)}
             </p>
           </div>
         </div>
       </div>
 
-      <p className="text-xs leading-relaxed text-faint">
+      <p className="text-xs leading-relaxed text-muted-foreground/70">
         There is deliberately no progress bar: CodeBuild reports which phase it is
         in, not how far through it is, and a bar drawn from phase numbers would
         spend most of its life wrong. The phase name and the log tail below are the
@@ -182,7 +182,7 @@ function SucceededState({ host }: { host: string }) {
       }
     >
       <p className="flex items-center gap-1.5">
-        <CheckIcon className="h-4 w-4 text-emerald-600" />
+        <CheckIcon className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
         The image is built and the service is registered at zero tasks. The first
         person to open it waits ~30–60 s for a cold start.
       </p>
@@ -224,14 +224,14 @@ function LogTail({ status }: { status: BuildStatus }) {
       }
     >
       {lines.length === 0 ? (
-        <p className="px-5 py-8 text-center text-sm text-faint">
+        <p className="px-5 py-8 text-center text-sm text-muted-foreground/70">
           No output yet. CodeBuild is still provisioning its own container.
         </p>
       ) : (
         <pre
           ref={box}
           aria-label="Build log tail"
-          className="max-h-80 overflow-auto bg-ink/[0.03] px-5 py-4 font-mono text-xs leading-relaxed text-muted"
+          className="max-h-80 overflow-auto bg-foreground/[0.03] px-5 py-4 font-mono text-xs leading-relaxed text-muted-foreground"
         >
           {lines.join('\n')}
         </pre>

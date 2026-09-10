@@ -4,7 +4,26 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="light dark" />
     <title>Stratevi Tools</title>
+    <script>
+      // Apply the stored theme before the first paint. Without this a dark
+      // machine gets a full white frame while the JS bundle loads, which is
+      // the one flash people actually notice. Kept inline and tiny on
+      // purpose; src/lib/appearance.ts owns it from mount onwards.
+      ;(function () {
+        try {
+          var stored = localStorage.getItem('appearance')
+          var dark =
+            stored === 'dark' ||
+            ((stored === null || stored === 'system') &&
+              window.matchMedia('(prefers-color-scheme: dark)').matches)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {
+          // Site data blocked. Light it is.
+        }
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

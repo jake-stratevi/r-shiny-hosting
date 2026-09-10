@@ -13,53 +13,67 @@ interface Style {
  * emerald = good, amber = in progress or needs a look, red = stopped,
  * neutral outline = off. The dot reinforces the label; the label always
  * carries the meaning on its own.
+ *
+ * Each chip is stated twice — a pale tint on paper, a translucent 400 on ink
+ * — because a `-50` fill on a near-black card is a white blob. The neutral
+ * chips use the tokens, so they follow the theme without a variant at all.
  */
+const CHIP = {
+  emerald:
+    'bg-emerald-100 text-emerald-800 ring-emerald-600/20 dark:bg-emerald-400/15 dark:text-emerald-300 dark:ring-emerald-400/25',
+  amber:
+    'bg-amber-100 text-amber-800 ring-amber-600/25 dark:bg-amber-400/15 dark:text-amber-300 dark:ring-amber-400/25',
+  red: 'bg-red-100 text-red-800 ring-red-600/20 dark:bg-red-400/15 dark:text-red-300 dark:ring-red-400/25',
+  neutral: 'bg-muted text-muted-foreground ring-border',
+  outline: 'bg-card/90 text-muted-foreground ring-border',
+} as const
+
 const STYLES: Record<LiveState, Style> = {
   awake: {
     label: 'Awake',
-    chip: 'bg-emerald-50 text-emerald-800 ring-emerald-600/20',
+    chip: CHIP.emerald,
     dot: 'bg-emerald-500',
   },
   starting: {
     label: 'Starting',
-    chip: 'bg-amber-50 text-amber-800 ring-amber-600/25',
+    chip: CHIP.amber,
     dot: 'bg-amber-500',
     pulse: true,
   },
   asleep: {
     label: 'Asleep',
-    chip: 'bg-slate-100 text-slate-600 ring-slate-500/15',
-    dot: 'bg-slate-400',
+    chip: CHIP.neutral,
+    dot: 'bg-muted-foreground/60',
   },
   disabled: {
     label: 'Disabled',
-    chip: 'bg-surface/90 text-muted ring-line',
-    dot: 'bg-faint',
+    chip: CHIP.outline,
+    dot: 'bg-muted-foreground/50',
   },
   expired: {
     label: 'Expired',
-    chip: 'bg-red-50 text-red-700 ring-red-600/20',
+    chip: CHIP.red,
     dot: 'bg-red-500',
   },
   // P2a. Building is work in progress, so it borrows `starting`'s amber and
   // its pulse; a failed build is a stopped app, so it is red like `expired`.
   building: {
     label: 'Building',
-    chip: 'bg-amber-50 text-amber-800 ring-amber-600/25',
+    chip: CHIP.amber,
     dot: 'bg-amber-500',
     pulse: true,
   },
   build_failed: {
     label: 'Build failed',
-    chip: 'bg-red-50 text-red-700 ring-red-600/20',
+    chip: CHIP.red,
     dot: 'bg-red-500',
   },
 }
 
 const UNKNOWN: Style = {
   label: 'Unknown',
-  chip: 'bg-slate-100 text-slate-600 ring-slate-500/20',
-  dot: 'bg-slate-400',
+  chip: CHIP.neutral,
+  dot: 'bg-muted-foreground/60',
 }
 
 /**

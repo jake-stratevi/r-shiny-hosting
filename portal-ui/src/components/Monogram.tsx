@@ -14,14 +14,18 @@
  * language (awake / starting / expired); if a card's decorative art could be
  * any of them, a glance at the grid stops being trustworthy. So the art gets
  * the blues, violets and greys, and never a warm tint.
+ *
+ * Each tint is stated for both themes: on the dark ink ground a `-100` fill
+ * is a headlight, so the dark side drops to a translucent 400 with the light
+ * 300 lettering the status chips use.
  */
 const TINTS = [
-  'bg-slate-100 text-slate-600',
-  'bg-sky-100 text-sky-800',
-  'bg-indigo-100 text-indigo-800',
-  'bg-violet-100 text-violet-800',
-  'bg-cyan-100 text-cyan-800',
-  'bg-zinc-200 text-zinc-600',
+  'bg-slate-100 text-slate-600 dark:bg-slate-400/15 dark:text-slate-300',
+  'bg-sky-100 text-sky-800 dark:bg-sky-400/15 dark:text-sky-300',
+  'bg-indigo-100 text-indigo-800 dark:bg-indigo-400/15 dark:text-indigo-300',
+  'bg-violet-100 text-violet-800 dark:bg-violet-400/15 dark:text-violet-300',
+  'bg-cyan-100 text-cyan-800 dark:bg-cyan-400/15 dark:text-cyan-300',
+  'bg-zinc-200 text-zinc-600 dark:bg-zinc-400/15 dark:text-zinc-300',
 ]
 
 export function tintFor(seed: string): string {

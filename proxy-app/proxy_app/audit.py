@@ -36,6 +36,12 @@ EVENT_FORCE_SLEEP = "force_sleep"
 #: not be somewhere an allowlist can be read out of. Never deduplicated: two
 #: identical edits a second apart are two decisions somebody made.
 EVENT_CONFIG_CHANGE = "config_change"
+#: Somebody used the portal's sign-out. Recorded against the PORTAL host
+#: (that is where the act happened; no app was involved) and never
+#: deduplicated -- signing out twice is two decisions, and the second one
+#: usually means the first appeared not to work, which is exactly the thing
+#: a trail should show.
+EVENT_SIGNED_OUT = "signed_out"
 
 #: --- P2a creation (docs/design/portal-p2a.md) -----------------------------
 #: One event per state transition, so the trail answers "who put this

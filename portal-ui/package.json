@@ -14,6 +14,7 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "@fontsource/instrument-sans": "^5.3.0",
     "jszip": "^3.10.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

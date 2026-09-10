@@ -49,6 +49,14 @@ afterEach(() => {
 
 describe('BuildPage — building', () => {
   it('names the phase, the elapsed time and why it takes so long', async () => {
+    // The elapsed readout is computed from `started_at` against the real
+    // clock, so on a slow run 3m 05s can roll over to 3m 06s between the
+    // fixture being built and the screen being read. Freeze the clock
+    // rather than race it; `shouldAdvanceTime` keeps waitFor working.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-09-10T12:00:00Z'))
+    build.mockResolvedValue(status())
+
     renderBuild()
 
     expect(await screen.findByText(/Phase:/)).toHaveTextContent('BUILD')

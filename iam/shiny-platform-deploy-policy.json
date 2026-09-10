@@ -199,7 +199,7 @@
       ]
     },
     {
-      "Sid": "PassProjectRolesToEcsAndLambdaOnly",
+      "Sid": "PassProjectRolesToNamedServicesOnly",
       "Effect": "Allow",
       "Action": [
         "iam:PassRole"
@@ -211,7 +211,8 @@
         "StringEquals": {
           "iam:PassedToService": [
             "ecs-tasks.amazonaws.com",
-            "lambda.amazonaws.com"
+            "lambda.amazonaws.com",
+            "codebuild.amazonaws.com"
           ]
         }
       }

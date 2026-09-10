@@ -41,10 +41,10 @@ export function ZipDropZone({
   }
 
   const skin = dragging
-    ? 'border-accent bg-accent-soft'
+    ? 'border-azure bg-azure/10'
     : file
-      ? 'border-emerald-300 bg-emerald-50/40'
-      : 'border-line hover:border-accent-line hover:bg-accent-soft/40'
+      ? 'border-emerald-300 dark:border-emerald-400/30 bg-emerald-50 dark:bg-emerald-400/10'
+      : 'border-border hover:border-azure/40 hover:bg-accent/40'
 
   return (
     <label
@@ -59,34 +59,34 @@ export function ZipDropZone({
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
-      className={`flex flex-col items-center justify-center gap-2 rounded-card border-2 border-dashed px-6 py-10 text-center transition-colors ${skin} ${
+      className={`flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed px-6 py-10 text-center transition-colors ${skin} ${
         locked ? 'cursor-not-allowed opacity-70' : 'cursor-pointer'
       }`}
     >
       {file && !dragging ? (
-        <CheckIcon className="h-8 w-8 text-emerald-600" />
+        <CheckIcon className="h-8 w-8 text-emerald-600 dark:text-emerald-400" />
       ) : (
-        <ArchiveIcon className={`h-8 w-8 ${dragging ? 'text-accent' : 'text-faint'}`} />
+        <ArchiveIcon className={`h-8 w-8 ${dragging ? 'text-azure' : 'text-muted-foreground/70'}`} />
       )}
 
       {dragging ? (
-        <span className="text-sm font-medium text-accent">Drop the .zip to upload</span>
+        <span className="text-sm font-medium text-azure">Drop the .zip to upload</span>
       ) : file ? (
         <>
-          <span className="max-w-full truncate text-sm font-medium text-ink">
+          <span className="max-w-full truncate text-sm font-medium text-foreground">
             {file.name}
           </span>
-          <span className="text-xs text-faint">
+          <span className="text-xs text-muted-foreground/70">
             {humanSize(file.size)} ·{' '}
             {busy ? 'uploading…' : 'click or drop another .zip to replace it'}
           </span>
         </>
       ) : (
         <>
-          <span className="text-sm text-muted">
+          <span className="text-sm text-muted-foreground">
             Drag a .zip here, or click to choose one
           </span>
-          <span className="text-xs text-faint">
+          <span className="text-xs text-muted-foreground/70">
             The app directory zipped, up to {MAX_ZIP_MB} MB. `app.R`, or `ui.R` and
             `server.R`, at the root or in one folder.
           </span>

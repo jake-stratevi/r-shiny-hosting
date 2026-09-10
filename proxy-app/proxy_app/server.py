@@ -28,13 +28,22 @@ from aiohttp import WSMsgType, web
 from multidict import CIMultiDict
 
 from . import access, audit as audit_mod, identity, pages, registry
+from . import signout as signout_mod
 from .audit import Event
+from .config import SignOut
 from .registry import App
 
 #: The proxy's own namespace, reserved on EVERY host and never forwarded to an
 #: app: the ALB health check needs somewhere to reach that does not depend on
 #: any app existing, and an app must not be able to shadow it.
 RESERVED_PREFIX = "/__proxy/"
+
+#: Sign-out lives under the reserved prefix rather than at, say, `/logout`,
+#: for the reason the prefix exists: `/logout` is a perfectly ordinary route
+#: for a Shiny app to own, and the day one does, its users would be signed
+#: out of the platform instead. Both routes answer on PORTAL hosts only.
+LOGOUT_PATH = RESERVED_PREFIX + "logout"
+SIGNED_OUT_PATH = RESERVED_PREFIX + "signed-out"
 
 #: Per RFC 9110; these describe a single hop and must not be relayed.
 HOP_BY_HOP = frozenset(
@@ -191,6 +200,7 @@ class Proxy:
         prober: Prober | None = None,
         portal: PortalLike | None = None,
         portal_hosts: Iterable[str] = (),
+        signout: SignOut | None = None,
     ) -> None:
         self._apps = apps
         self._tasks = tasks
@@ -202,6 +212,7 @@ class Proxy:
         self._clock = clock
         self._prober = prober or Prober()
         self._portal = portal
+        self._signout = signout
         # Normalized the same way an incoming Host header is, so the
         # comparison in `handle` is a set membership test and not a parse.
         self._portal_hosts = frozenset(
@@ -391,7 +402,80 @@ class Proxy:
                 return _plain(503, "not ready")
             return _plain(200, "ready")
 
+        # Sign-out is portal-only. On an app host these two paths do not
+        # exist at all: an app's users sign out of the platform from the
+        # portal, and a `Set-Cookie` served from an app hostname would be
+        # scoped to that hostname and clear nothing that matters.
+        host = registry.normalize_host(request.host)
+        if request.path in (LOGOUT_PATH, SIGNED_OUT_PATH):
+            if host not in self._portal_hosts:
+                return _plain(404, "not found")
+            if request.method not in ("GET", "HEAD"):
+                return _plain(405, "method not allowed")
+            if request.path == SIGNED_OUT_PATH:
+                # Deliberately identity-free: this is the page a signed-OUT
+                # browser lands on, and asking it who it is would be asking
+                # the question sign-out just answered.
+                return pages.signed_out(
+                    f"https://{host}/", sso_ended=self._signout is not None
+                )
+            return self._logout(request, host)
+
         return _plain(404, "not found")
+
+    def _logout(self, request: web.Request, host: str) -> web.Response:
+        """End the session, both halves of it, and say so.
+
+        Order matters and is not negotiable. The cookies go first, on THIS
+        response, because they are the half the ALB owns: leave them and the
+        redirect below comes back through a listener rule that re-reads a
+        session it still considers valid. Cognito goes second, because
+        ending its session is what stops it silently re-issuing one.
+        """
+        principal = identity.from_headers(request.headers)
+        self._audit.record(
+            Event(
+                host=host,
+                event=audit_mod.EVENT_SIGNED_OUT,
+                email=principal.email,
+                path=request.path,
+            )
+        )
+        self._log.info(
+            "signed out",
+            extra={"host": host, "email": principal.email, "sub": principal.sub},
+        )
+
+        landing = f"https://{host}{SIGNED_OUT_PATH}"
+        if self._signout is not None:
+            response: web.Response = web.Response(
+                status=302,
+                headers={
+                    "Location": signout_mod.logout_url(self._signout, landing),
+                    # A cached 302 to a logout endpoint is a page that cannot
+                    # be signed back into without clearing the browser.
+                    "Cache-Control": "no-store",
+                },
+            )
+        else:
+            # Degraded, and honest about it (config.SignOut explains why this
+            # is not a startup failure): the ALB cookies still go, so the
+            # platform session ends, but Cognito still holds one and the next
+            # sign-in will be silent. Serve the page directly rather than
+            # redirecting -- there is nowhere useful to redirect TO.
+            self._log.warning(
+                "signed out without ending the Cognito session; "
+                "COGNITO_DOMAIN is not configured",
+                extra={"host": host},
+            )
+            response = pages.signed_out(f"https://{host}/", sso_ended=False)
+
+        # Every shard the browser sent, not just -0. A federated identity's
+        # claims routinely need two or three cookies, and a session with one
+        # shard left is a session.
+        for value in signout_mod.expiry_headers(request.cookies):
+            response.headers.add("Set-Cookie", value)
+        return response
 
     # --- proxying ----------------------------------------------------------
 
@@ -682,10 +766,12 @@ def create_app(proxy: Proxy, *, client_max_size: int = 1024**3) -> web.Applicati
 
 
 __all__ = [
+    "LOGOUT_PATH",
     "PortalLike",
     "Prober",
     "Proxy",
     "RESERVED_PREFIX",
+    "SIGNED_OUT_PATH",
     "create_app",
     "make_session",
 ]

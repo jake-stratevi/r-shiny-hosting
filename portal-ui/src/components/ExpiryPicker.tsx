@@ -30,7 +30,7 @@ export function ExpiryPicker({ value, onChange, disabled }: Props) {
     <div className="space-y-2.5">
       <label
         htmlFor={neverId}
-        className={`flex w-fit items-center gap-2 text-sm text-ink ${
+        className={`flex w-fit items-center gap-2 text-sm text-foreground ${
           disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
         }`}
       >
@@ -39,7 +39,7 @@ export function ExpiryPicker({ value, onChange, disabled }: Props) {
           type="checkbox"
           checked={never}
           disabled={disabled}
-          className="h-4 w-4 rounded border-line text-accent accent-accent focus:ring-accent"
+          className="h-4 w-4 rounded border-border text-azure accent-accent focus:ring-azure"
           onChange={(e) => onChange(e.target.checked ? null : defaultExpiryEpoch())}
         />
         Never expires
@@ -53,16 +53,16 @@ export function ExpiryPicker({ value, onChange, disabled }: Props) {
           value={epochToDateInput(value)}
           min={todayDateInput()}
           disabled={disabled || never}
-          className="rounded-md border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent disabled:cursor-not-allowed disabled:bg-canvas disabled:text-faint"
+          className="rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-azure disabled:cursor-not-allowed disabled:bg-background disabled:text-muted-foreground/70"
           onChange={(e) => {
             const next = dateInputToEpoch(e.target.value)
             if (next !== null) onChange(next)
           }}
         />
         {never ? (
-          <span className="text-xs text-faint">No expiry set.</span>
+          <span className="text-xs text-muted-foreground/70">No expiry set.</span>
         ) : (
-          <span className={`text-xs ${expired ? 'text-red-700' : 'text-faint'}`}>
+          <span className={`text-xs ${expired ? 'text-red-700 dark:text-red-300' : 'text-muted-foreground/70'}`}>
             {expired ? 'Already past: ' : 'Access ends '}
             {formatDateTime(value)}
           </span>

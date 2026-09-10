@@ -31,9 +31,16 @@ resource "aws_cognito_user_pool_client" "this" {
     ["https://${local.retired_portal_fqdn}/oauth2/idpresponse"],
   ))
 
+  # The signed-out page is a logout target, so Cognito must accept it as a
+  # logout_uri -- it matches these EXACTLY, so the path matters.
+  #
+  # NOTE: logout_urls is in ignore_changes below, so editing this list does
+  # NOT push the change. It is here so a from-scratch rebuild is correct;
+  # the live client is updated by hand (RUNBOOK, "User administration").
   logout_urls = distinct(concat(
     [for host in var.app_hosts : "https://${host}"],
     [for host in local.portal_hosts : "https://${host}"],
+    [for host in local.portal_hosts : "https://${host}/__proxy/signed-out"],
     ["https://${local.retired_portal_fqdn}"],
   ))
 
@@ -72,7 +79,30 @@ resource "aws_cognito_user_pool_client" "this" {
   # runtime data now, not infrastructure.
   # ---------------------------------------------------------------------
   lifecycle {
-    ignore_changes = [callback_urls, logout_urls]
+    ignore_changes = [
+      callback_urls,
+      logout_urls,
+
+      # Belt AND braces on the login page's identity providers.
+      #
+      # The list above is built from an SSM value another stack exports. On
+      # 2026-09-10 that value was still the placeholder "COGNITO" while the
+      # live client carried ["COGNITO", "Microsoft365"] -- so the next apply
+      # of this stack would have quietly removed the Microsoft button and
+      # locked every federated user out of a platform they had been using
+      # all day. The plan line would have read like a one-word tidy-up.
+      #
+      # The tfvar is now correct (platform/terraform.tfvars names
+      # Microsoft365), so a from-scratch rebuild produces the right list --
+      # that file stays the record of intent. This ignore is the insurance:
+      # a provider added or renamed in the console can never be stripped by
+      # an apply that simply had stale inputs.
+      #
+      # Adding an IdP: create it in the pool, add it here in tfvars for the
+      # record, and attach it to the client in the console. Terraform will
+      # not fight you either way.
+      supported_identity_providers,
+    ]
   }
 }
 

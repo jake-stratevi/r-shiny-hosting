@@ -18,7 +18,7 @@ from aiohttp import web
 from . import activity as activity_mod
 from . import audit as audit_mod
 from . import config as config_mod
-from . import ecsctl, portal as portal_mod, provision, registry, server, sleeper
+from . import ecsctl, portal as portal_mod, provision, registry, server, signout, sleeper
 
 #: Both short enough that a revoked entitlement or a replaced task is picked up
 #: within seconds, long enough that a page full of assets is one lookup rather
@@ -99,7 +99,15 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
         log=log.getChild("server"),
         portal=portal,
         portal_hosts=cfg.portal_hosts,
+        signout=cfg.signout,
     )
+
+    if cfg.signout_error:
+        # Not fatal, same reasoning as creation_error: sign-out still expires
+        # the ALB cookies, and refusing to boot over it would take every app
+        # on the platform down. Loud, because the symptom -- "sign out does
+        # nothing" -- is otherwise indistinguishable from an SSO quirk.
+        log.error(cfg.signout_error)
 
     runner = web.AppRunner(
         server.create_app(proxy),
@@ -126,6 +134,11 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
             "portal_dist": cfg.portal_dist if cfg.portal_enabled() else "(portal off)",
             "creation": (
                 cfg.creation.domain if cfg.creation else "(creation off)"
+            ),
+            "signout": (
+                signout.hosted_ui(cfg.signout)
+                if cfg.signout
+                else "(cookies only -- no cognito logout)"
             ),
         },
     )

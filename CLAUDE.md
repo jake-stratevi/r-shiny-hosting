@@ -65,9 +65,11 @@ two of the three cases.
 - `aws_ecs_service.this` → `ignore_changes = [desired_count]` (app stacks;
   the scaler)
 - `proxy/cognito.tf`'s `aws_cognito_user_pool_client.this` →
-  `ignore_changes = [callback_urls, logout_urls]` (**the portal adds a
-  callback per created app**; without it an apply wipes every wizard-created
-  app's sign-in and reports nothing wrong)
+  `ignore_changes = [callback_urls, logout_urls, supported_identity_providers]`
+  (**the portal adds a callback per created app**, and the identity-provider
+  list is built from an SSM value another stack owns; without these an apply
+  wipes every wizard-created app's sign-in, or drops the Microsoft button
+  from the login page, and reports nothing wrong either way)
 
 The proxy's own listener rule and service are the exception — nothing mutates
 them, so they deliberately have NO ignore blocks. See the comments there.
@@ -81,9 +83,12 @@ serves it — so this register only matters for apps still on the legacy path.
 
 Register: 50 free (was the retired ADR-0013 Lambda portal), 100 free (was
 dashboard, now proxied), model 200 + its ECS association rule at 900,
-**proxy 5000** (the `*.tools.stratevi.com` catch-all — must stay the highest
-number so any explicit app rule still wins; see docs/design/proxy.md).
-Legacy app stacks put their ECS association rule at priority + 700.
+**4900 the signed-out page** (the listener's ONLY rule with no
+authenticate action — read the banner in `proxy/alb.tf` before touching
+it), **proxy 5000** (the `*.tools.stratevi.com` catch-all — must stay the
+highest number so any explicit app rule still wins; see
+docs/design/proxy.md). Legacy app stacks put their ECS association rule at
+priority + 700.
 
 **Terraform escaping:** `$${` produces a literal `${`, not a literal `$`. Use
 `format()` when you need a dollar sign in a string. This has caused two bugs.

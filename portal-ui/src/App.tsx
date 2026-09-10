@@ -38,7 +38,7 @@ function RequireCreate({ children }: { children: ReactNode }) {
 
 function FullPage({ children }: { children: ReactNode }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas px-6">
+    <div className="flex min-h-screen items-center justify-center bg-background px-6">
       <div className="w-full max-w-lg">{children}</div>
     </div>
   )

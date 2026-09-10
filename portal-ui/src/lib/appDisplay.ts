@@ -86,6 +86,30 @@ export function liveStateHint(state: LiveState | string): string | null {
  */
 export const BUILD_HINT = 'Still building — first builds take 10–20 minutes'
 
+/**
+ * How loudly a tile's readiness line should be said. Kept beside the wording
+ * so the two can never disagree; the glyph that goes with it is the card's
+ * business, not this file's.
+ */
+export type LiveStateTone = 'muted' | 'good' | 'info' | 'warn' | 'bad'
+
+export function liveStateTone(state: LiveState | string): LiveStateTone {
+  switch (state) {
+    case 'awake':
+      return 'good'
+    case 'starting':
+      return 'info'
+    case 'building':
+    case 'expired':
+      return 'warn'
+    case 'build_failed':
+      return 'bad'
+    default:
+      // asleep and disabled are not problems; they are just the resting state.
+      return 'muted'
+  }
+}
+
 /** Rows an admin should look at today, in the order they should look. */
 export function needsAttention(app: App): string | null {
   if (app.status === 'build_failed' || app.live_state === 'build_failed') {

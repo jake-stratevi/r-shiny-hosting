@@ -21,6 +21,29 @@ Env (exactly this, nothing else):
                   the API still answers and `/` serves a placeholder, so the
                   backend is deployable before portal-ui/ exists.
 
+Sign-out (``/__proxy/logout``) reads two more, optional TOGETHER and
+required TOGETHER for the same reason the creation block is -- half of a
+sign-out is a sign-out that does not work:
+
+    COGNITO_DOMAIN     the hosted UI's domain. Either the PREFIX Cognito
+                       registered (the value platform/ssm.tf exports as
+                       `cognito_domain`, e.g. "stratevi-hub"), in which case
+                       AWS_REGION completes it into
+                       <prefix>.auth.<region>.amazoncognito.com, or a full
+                       custom domain hostname if one is ever adopted. Same
+                       semantics as the ALB action's `user_pool_domain`.
+    COGNITO_CLIENT_ID  the shared app client -- the SAME variable the
+                       creation block reads, deliberately read again here so
+                       sign-out does not depend on the creation pipeline
+                       being deployed.
+    SIGNED_OUT_URL     optional override for the `logout_uri` Cognito sends
+                       the browser back to. Default:
+                       https://<the portal host the request arrived on>
+                       /__proxy/signed-out. Set it only if a different URL is
+                       what got registered in the client's LogoutURLs --
+                       Cognito matches that list EXACTLY and refuses anything
+                       else with an error page.
+
 P2a self-service creation (docs/design/portal-p2a.md) adds one more block,
 all of it optional TOGETHER and required TOGETHER. Unlike everything above,
 a partial block DISABLES creation and logs rather than failing startup --
@@ -71,6 +94,40 @@ DEFAULT_PORTAL_DIST = "./portal-dist"
 
 class ConfigError(RuntimeError):
     """A deployment error: the environment does not satisfy the contract."""
+
+
+@dataclass(frozen=True)
+class SignOut:
+    """What ``/__proxy/logout`` needs to end the Cognito session too.
+
+    Signing out of this platform is two acts, not one. Expiring the ALB's
+    ``AWSELBAuthSessionCookie`` shards is the half this service can always
+    do; ending the Cognito hosted-UI session is the half that needs to know
+    where that hosted UI lives, and without it the ALB's very next
+    authenticate action gets a still-valid Cognito session back and signs
+    the user straight in again.
+
+    Optional as a BLOCK and degrading rather than fatal, for the same reason
+    :class:`Creation` is: this task fronts every app on the platform and must
+    not refuse to boot over a sign-out variable. What degrades is honest --
+    the cookies are still expired, and the person is told the SSO session was
+    not ended -- rather than a redirect to a URL assembled from a guess.
+    """
+
+    #: Either a hosted-UI prefix ("stratevi-hub") or a full custom hostname.
+    #: Which one it is decided by whether it contains a dot, exactly as the
+    #: ALB's own `user_pool_domain` decides it.
+    domain: str
+    client_id: str
+    #: Needed only to complete the prefix form. Empty is valid when `domain`
+    #: is already a full hostname.
+    region: str = ""
+    #: Empty means "derive it from the request's own portal host".
+    signed_out_url: str = ""
+
+
+#: The env names :class:`SignOut` requires together.
+SIGNOUT_VARIABLES = ("COGNITO_DOMAIN", "COGNITO_CLIENT_ID")
 
 
 @dataclass(frozen=True)
@@ -146,12 +203,21 @@ class Config:
     #: Why creation is off, when it is off for a REASON rather than because
     #: nobody asked for it. Empty when the block is simply absent.
     creation_error: str = ""
+    #: None until COGNITO_DOMAIN lands. Sign-out still expires the ALB
+    #: cookies without it; it just cannot end the Cognito session as well.
+    signout: SignOut | None = None
+    #: Why sign-out is half-configured, when it is. Same contract as
+    #: `creation_error`: empty when the block is simply absent.
+    signout_error: str = ""
 
     def portal_enabled(self) -> bool:
         return bool(self.portal_hosts)
 
     def creation_enabled(self) -> bool:
         return self.creation is not None
+
+    def signout_enabled(self) -> bool:
+        return self.signout is not None
 
 
 def parse_portal_hosts(raw: str) -> tuple[str, ...]:
@@ -203,6 +269,7 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         raise ConfigError("missing required environment: " + ", ".join(missing))
 
     creation, creation_error = creation_from_env(env)
+    signout, signout_error = signout_from_env(env, region)
     return Config(
         cluster=cluster,
         apps_table=apps_table,
@@ -214,6 +281,46 @@ def from_env(env: Mapping[str, str] | None = None) -> Config:
         portal_dist=portal_dist,
         creation=creation,
         creation_error=creation_error,
+        signout=signout,
+        signout_error=signout_error,
+    )
+
+
+def signout_from_env(env: Mapping[str, str], region: str = "") -> tuple[SignOut | None, str]:
+    """The sign-out block: the settings, or ``None`` plus why not.
+
+    Never raises. See :class:`SignOut` for why a missing hosted-UI domain
+    degrades sign-out instead of failing startup.
+    """
+    values = {name: (env.get(name) or "").strip() for name in SIGNOUT_VARIABLES}
+    if not any(values.values()):
+        return None, ""  # nobody has asked for sign-out on this deployment
+
+    missing = [name for name in SIGNOUT_VARIABLES if not values[name]]
+    if missing:
+        return None, (
+            "sign-out cannot end the Cognito session: partly configured, "
+            "missing " + ", ".join(missing)
+        )
+
+    domain = values["COGNITO_DOMAIN"]
+    if "." not in domain and not region:
+        # The prefix form is only half an address. Guessing a region here
+        # would produce a plausible URL that Cognito answers with an error
+        # page, which is a worse failure than not redirecting at all.
+        return None, (
+            "sign-out cannot end the Cognito session: COGNITO_DOMAIN "
+            f"{domain!r} is a hosted-UI prefix and AWS_REGION is not set"
+        )
+
+    return (
+        SignOut(
+            domain=domain,
+            client_id=values["COGNITO_CLIENT_ID"],
+            region=region,
+            signed_out_url=(env.get("SIGNED_OUT_URL") or "").strip(),
+        ),
+        "",
     )
 
 

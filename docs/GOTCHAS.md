@@ -152,3 +152,21 @@ address the IdP also emits fails with `AliasExistsException` -- and if that
 user is declared in Terraform, the failure lands halfway through an apply.
 Either federate a domain or hand-create accounts in it, never both. See
 ADR-0015.
+
+**A Cognito app client's login-page configuration is runtime state, not
+config -- Terraform will clobber it.** Three fields on
+`aws_cognito_user_pool_client` get edited outside Terraform in normal use:
+`callback_urls` and `logout_urls` (the portal appends one per app it
+creates) and `supported_identity_providers` (an IdP attached in the
+console). All three are now in that resource's `ignore_changes`.
+
+This is not hypothetical. On 2026-09-10 the live client carried
+`["COGNITO", "Microsoft365"]` while the SSM value Terraform builds the list
+from still said `"COGNITO"` -- the next apply of the proxy stack would have
+removed the Microsoft button and locked out every federated user. The plan
+line would have looked like a harmless one-word change.
+
+The lesson generalises: if something other than Terraform legitimately
+writes a field at runtime, `ignore_changes` it and say why, or an apply
+made for an unrelated reason will silently undo it. Terraform owns the
+resource's existence; the runtime owns that field.

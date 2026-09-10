@@ -2,25 +2,32 @@ import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from 'reac
 import { Link } from 'react-router-dom'
 
 export type ButtonVariant = 'primary' | 'outline' | 'ghost' | 'danger'
-export type ButtonSize = 'sm' | 'md'
+export type ButtonSize = 'sm' | 'md' | 'icon'
 
+/**
+ * Buttons follow the house rule stated with the tokens in index.css:
+ * **primary actions are ink**, never azure. A near-black button is the
+ * editorial move; azure is the wayfinding move and stays on focus rings,
+ * links and the active trail. So `primary` is `bg-primary` — ink on paper in
+ * light, paper on ink in dark — and nothing in this file reaches for a hue.
+ */
 const BASE =
-  'inline-flex select-none items-center justify-center gap-1.5 rounded-tile font-medium transition-colors disabled:cursor-not-allowed'
+  'inline-flex shrink-0 select-none items-center justify-center gap-2 whitespace-nowrap rounded-md font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50'
 
 const SIZES: Record<ButtonSize, string> = {
-  sm: 'px-2.5 py-1.5 text-[13px]',
-  md: 'px-3.5 py-2 text-sm',
+  sm: 'h-8 px-3 text-[13px]',
+  md: 'h-9 px-4 text-sm',
+  icon: 'h-8 w-8',
 }
 
 const VARIANTS: Record<ButtonVariant, string> = {
-  primary:
-    'bg-accent text-white hover:bg-accent-hover disabled:bg-line disabled:text-faint',
+  primary: 'bg-primary text-primary-foreground hover:bg-primary/90',
   outline:
-    'border border-line bg-surface text-ink hover:border-accent-line hover:bg-accent-soft hover:text-accent disabled:border-line-soft disabled:bg-canvas disabled:text-faint disabled:hover:bg-canvas disabled:hover:text-faint',
-  ghost:
-    'text-muted hover:bg-canvas hover:text-ink disabled:text-faint disabled:hover:bg-transparent',
-  danger:
-    'bg-amber-700 text-white hover:bg-amber-800 disabled:bg-line disabled:text-faint',
+    'border border-border bg-card text-foreground hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:hover:bg-input/50',
+  ghost: 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+  // Red is one of the four state colours; a destructive submit is the one
+  // place a button is allowed to wear one.
+  danger: 'bg-destructive text-destructive-foreground hover:bg-destructive/90',
 }
 
 export function buttonClass(

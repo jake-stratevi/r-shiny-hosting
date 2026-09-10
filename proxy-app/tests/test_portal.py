@@ -393,7 +393,25 @@ async def test_a_menu_tile_carries_a_url_and_a_live_state():
         "description": "Patient-level microsimulation.",
         "url": "https://model.tools.stratevi.com",
         "live_state": portal.LIVE_AWAKE,
+        # The tile shows both, so the payload carries both. Null rather than
+        # absent when unset -- the card renders "Never expires" / "Not opened
+        # yet" from them and must not have to guess which case it is in.
+        "expires_at": None,
+        "last_active": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_a_menu_tile_carries_expiry_and_last_activity_when_the_row_has_them():
+    # Both relative to NOW: an expiry in the past would make the app expired
+    # and drop it from the menu entirely, which is a different test.
+    expires = int(NOW) + 86_400
+    seen = int(NOW) - 3_600
+    store = FakeStore([app_row(expires_at=expires, last_active=seen)])
+    response = await portal_for(store=store).handle(request("/api/v1/menu"))
+    tile = body_of(response)["apps"][0]
+    assert tile["expires_at"] == expires
+    assert tile["last_active"] == seen
 
 
 @pytest.mark.asyncio

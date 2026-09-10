@@ -107,15 +107,15 @@ export function EmailTagEditor({ value, onChange, disabled, id, describedBy }: P
   return (
     <div>
       <div
-        className={`flex min-h-[42px] flex-wrap items-center gap-1.5 rounded-md border bg-surface px-2 py-1.5 transition-colors ${
-          error ? 'border-red-300' : 'border-line focus-within:border-accent'
-        } ${disabled ? 'cursor-not-allowed bg-canvas opacity-60' : ''}`}
+        className={`flex min-h-[42px] flex-wrap items-center gap-1.5 rounded-md border bg-card px-2 py-1.5 transition-colors ${
+          error ? 'border-red-300 dark:border-red-400/30' : 'border-border focus-within:border-azure'
+        } ${disabled ? 'cursor-not-allowed bg-background opacity-60' : ''}`}
         onClick={() => inputRef.current?.focus()}
       >
         {value.map((email) => (
           <span
             key={email}
-            className="inline-flex items-center gap-1 rounded bg-accent-soft py-1 pl-2 pr-1 text-xs font-medium text-ink"
+            className="inline-flex items-center gap-1 rounded bg-accent py-1 pl-2 pr-1 text-xs font-medium text-foreground"
           >
             {email}
             <button
@@ -126,7 +126,7 @@ export function EmailTagEditor({ value, onChange, disabled, id, describedBy }: P
                 e.stopPropagation()
                 remove(email)
               }}
-              className="rounded px-1 text-faint transition-colors hover:bg-white hover:text-ink disabled:cursor-not-allowed"
+              className="rounded px-1 text-muted-foreground/70 transition-colors hover:bg-card hover:text-foreground disabled:cursor-not-allowed"
             >
               ×
             </button>
@@ -141,7 +141,7 @@ export function EmailTagEditor({ value, onChange, disabled, id, describedBy }: P
           aria-invalid={error ? true : undefined}
           aria-describedby={[describedBy, error ? errorId : null].filter(Boolean).join(' ') || undefined}
           placeholder={value.length === 0 ? 'name@example.com' : 'Add another…'}
-          className="min-w-[12rem] flex-1 bg-transparent px-1 py-1 text-sm text-ink outline-none placeholder:text-faint disabled:cursor-not-allowed"
+          className="min-w-[12rem] flex-1 bg-transparent px-1 py-1 text-sm text-foreground outline-none placeholder:text-muted-foreground/70 disabled:cursor-not-allowed"
           onChange={(e) => {
             setDraft(e.target.value)
             if (error) setError(null)
@@ -154,7 +154,7 @@ export function EmailTagEditor({ value, onChange, disabled, id, describedBy }: P
         />
       </div>
       {error ? (
-        <p id={errorId} role="alert" className="mt-1.5 text-xs text-red-700">
+        <p id={errorId} role="alert" className="mt-1.5 text-xs text-red-700 dark:text-red-300">
           {error}
         </p>
       ) : null}

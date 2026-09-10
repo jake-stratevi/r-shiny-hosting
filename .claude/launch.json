@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "portal-ui-mock",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "portal-ui", "run", "dev:mock", "--", "--port", "5199", "--strictPort"],
+      "port": 5199
+    }
+  ]
+}

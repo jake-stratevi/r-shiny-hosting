@@ -62,6 +62,10 @@ export interface MenuApp {
   description: string
   url: string
   live_state: LiveState
+  /** Null = never expires. On the menu because the tile shows it. */
+  expires_at: number | null
+  /** Null = nobody has ever opened it. */
+  last_active: number | null
 }
 
 export interface MenuResponse {

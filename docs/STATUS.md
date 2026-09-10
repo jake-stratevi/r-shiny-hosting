@@ -105,6 +105,31 @@ client and a valid `state`. Entitlements live in exactly one place now
 `portal/` directory can be deleted from the repo at any time; its state file
 in S3 is empty.
 
+**Portal P2a — self-service app creation. Deployed 2026-09-10, untested by a
+real create.** The "+ New app" wizard is live at
+https://shinyplatform.tools.stratevi.com for anyone in the `__config__`
+row's `creator_emails` (currently Jake only; admin does NOT imply create).
+Pipeline: browser inspects the zip locally → presigned PUT to
+`shiny-portal-uploads-652063276768` → CodeBuild `shiny-app-build` renders
+the bundle into the pinned rocker Dockerfile and pushes `shiny-<key>:r1` →
+the portal SDK-provisions ECR repo, an IAM role under the
+`shiny-app-boundary` permissions boundary, task definition, service at
+desired 0, and the Cognito callback. Deploy policy is at **v6**
+(codebuild + IAM policy management + PassRole to codebuild).
+See docs/design/portal-p2a.md. **The hostname denylist is still the
+placeholder set** — Jake owes the real brand/client terms before anyone
+names a client-facing app.
+
+**Portal front end reworked to match assembled.work (2026-09-10).** Their
+token system verbatim (warm ink-on-paper, azure for focus/wayfinding only,
+ink primaries), full dark mode with a light/dark/system toggle, a
+collapsible icon rail that defaults collapsed, self-hosted Instrument Sans,
+breadcrumbs, link chips with copy/open, icon metadata rows, and their
+responsive list-column template. Reference notes in
+docs/design/portal-visual-reference.md. **Sign-out works** — see proxy.md;
+note the one unauthenticated listener rule at priority 4900, explained in
+proxy/alb.tf.
+
 ## Broken right now
 
 **The `shiny-model` ECR repository still has no image — and the service is

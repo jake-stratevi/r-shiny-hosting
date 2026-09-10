@@ -83,6 +83,20 @@ export const CalendarIcon = svg(
   </>,
 )
 
+/**
+ * Expiry: a calendar with the clock face lucide's `CalendarClock` puts in its
+ * bottom-right corner. The plain `CalendarIcon` means "a date"; this one
+ * means "a date this thing runs out on", which is a different fact.
+ */
+export const CalendarClockIcon = svg(
+  <>
+    <path d="M20.5 11.5V7a2 2 0 0 0-2-2h-13a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2H12" />
+    <path d="M3.5 10h17M8 3.5V6.5M16 3.5V6.5" />
+    <circle cx="17.5" cy="17.5" r="4" />
+    <path d="M17.5 15.8v1.8l1.3.8" />
+  </>,
+)
+
 export const UsersIcon = svg(
   <>
     <circle cx="9.5" cy="8.5" r="3.5" />
@@ -168,5 +182,68 @@ export const AlertIcon = svg(
   <>
     <path d="M10.6 4.2 2.9 17.5A1.6 1.6 0 0 0 4.3 20h15.4a1.6 1.6 0 0 0 1.4-2.5L13.4 4.2a1.6 1.6 0 0 0-2.8 0Z" />
     <path d="M12 9.5v4M12 16.8h.01" />
+  </>,
+)
+
+/* ── The shell: sidebar, appearance toggle, user menu ───────────────────── */
+
+export const SunIcon = svg(
+  <>
+    <circle cx="12" cy="12" r="4" />
+    <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.2 5.2l1.4 1.4M17.4 17.4l1.4 1.4M18.8 5.2l-1.4 1.4M6.6 17.4l-1.4 1.4" />
+  </>,
+)
+
+export const MoonIcon = svg(
+  <path d="M20 14.3A8.5 8.5 0 0 1 9.7 4a8.5 8.5 0 1 0 10.3 10.3Z" />,
+)
+
+export const MonitorIcon = svg(
+  <>
+    <rect x="2.5" y="4" width="19" height="12.5" rx="2" />
+    <path d="M8.5 20.5h7M12 16.5v4" />
+  </>,
+)
+
+/** The rail control. One glyph; the chevron flips with the state. */
+export const PanelLeftIcon = svg(
+  <>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9.5 4v16" />
+  </>,
+)
+
+export const MenuIcon = svg(<path d="M4 7h16M4 12h16M4 17h16" />)
+
+export const CloseIcon = svg(<path d="M6 6l12 12M18 6 6 18" />)
+
+export const ChevronUpDownIcon = svg(
+  <>
+    <path d="m8 9 4-4 4 4" />
+    <path d="m16 15-4 4-4-4" />
+  </>,
+)
+
+/** Administration: a shield, because "manage apps" is a permission, not a place. */
+export const ShieldIcon = svg(
+  <>
+    <path d="M12 3.2 4.8 6v6c0 4.3 3 7.4 7.2 8.8 4.2-1.4 7.2-4.5 7.2-8.8V6z" />
+    <path d="m9 12 2.2 2.2L15.2 10" />
+  </>,
+)
+
+export const LogOutIcon = svg(
+  <>
+    <path d="M14.5 4.5H18A1.5 1.5 0 0 1 19.5 6v12a1.5 1.5 0 0 1-1.5 1.5h-3.5" />
+    <path d="M10 8.5 6.5 12l3.5 3.5" />
+    <path d="M6.5 12H15" />
+  </>,
+)
+
+/** "New app" in the rail: a plus that reads as an action even at 16px. */
+export const CirclePlusIcon = svg(
+  <>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 8.5v7M8.5 12h7" />
   </>,
 )

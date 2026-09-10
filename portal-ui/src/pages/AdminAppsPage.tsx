@@ -2,6 +2,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 import type { App } from '../api/types'
 import { ButtonRoute } from '../components/Button'
+import { LinkField } from '../components/LinkField'
 import { Monogram } from '../components/Monogram'
 import { StatTile } from '../components/StatTile'
 import { StatusBadge } from '../components/StatusBadge'
@@ -77,7 +78,7 @@ export function AdminAppsPage() {
               label="Awake now"
               value={awake}
               icon={<BoltIcon className="h-4 w-4" />}
-              iconClass="bg-emerald-50 text-emerald-700"
+              iconClass="bg-emerald-50 dark:bg-emerald-400/10 text-emerald-700 dark:text-emerald-300"
               pressed={collection.status === 'awake'}
               onClick={() =>
                 collection.setStatus(collection.status === 'awake' ? 'all' : 'awake')
@@ -87,7 +88,7 @@ export function AdminAppsPage() {
               label="All apps"
               value={apps.length}
               icon={<GridIcon className="h-4 w-4" />}
-              iconClass="bg-accent-soft text-accent"
+              iconClass="bg-azure/10 text-azure"
               pressed={collection.status === 'all'}
               onClick={() => collection.setStatus('all')}
             />
@@ -96,7 +97,7 @@ export function AdminAppsPage() {
               value={attention}
               icon={<InfoIcon className="h-4 w-4" />}
               iconClass={
-                attention > 0 ? 'bg-amber-50 text-amber-700' : 'bg-canvas text-faint'
+                attention > 0 ? 'bg-amber-50 dark:bg-amber-400/10 text-amber-700 dark:text-amber-300' : 'bg-background text-muted-foreground/70'
               }
               pressed={collection.status === 'attention'}
               onClick={() =>
@@ -117,12 +118,12 @@ export function AdminAppsPage() {
           />
 
           {collection.results.length === 0 ? (
-            <div className="rounded-card border border-dashed border-line px-4 py-12 text-center text-sm text-muted">
+            <div className="rounded-lg border border-dashed border-border px-4 py-12 text-center text-sm text-muted-foreground">
               No apps match.{' '}
               <button
                 type="button"
                 onClick={collection.reset}
-                className="text-accent underline underline-offset-2"
+                className="text-azure underline underline-offset-2"
               >
                 Clear search and filters
               </button>
@@ -137,7 +138,7 @@ export function AdminAppsPage() {
             <AppTable apps={collection.results} />
           )}
 
-          <p className="text-xs text-faint">
+          <p className="text-xs text-muted-foreground/70">
             Showing {collection.results.length} of {apps.length}{' '}
             {apps.length === 1 ? 'app' : 'apps'}.
           </p>
@@ -170,7 +171,7 @@ function BrowseBar({
   return (
     <div className="flex flex-wrap items-center gap-2">
       <div className="relative min-w-[12rem] flex-1">
-        <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
+        <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/70" />
         <input
           type="search"
           value={query}
@@ -210,7 +211,7 @@ function BrowseBar({
       <div
         role="group"
         aria-label="View"
-        className="flex rounded-tile border border-line bg-surface p-0.5"
+        className="flex rounded-md border border-border bg-card p-0.5"
       >
         {(
           [
@@ -225,7 +226,7 @@ function BrowseBar({
             aria-pressed={view === value}
             onClick={() => onView(value)}
             className={`rounded-[6px] px-2 py-1.5 transition-colors ${
-              view === value ? 'bg-accent-soft text-accent' : 'text-faint hover:text-ink'
+              view === value ? 'bg-accent text-accent-foreground' : 'text-muted-foreground/70 hover:text-foreground'
             }`}
           >
             {icon}
@@ -237,13 +238,13 @@ function BrowseBar({
 }
 
 const selectClass =
-  'rounded-tile border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent'
+  'rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-azure'
 
 function AttentionFlag({ app }: { app: App }) {
   const flag = attentionFlag(app)
   if (!flag) return null
   return (
-    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-800 ring-1 ring-inset ring-amber-600/20">
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 dark:bg-amber-400/10 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300 ring-1 ring-inset ring-amber-600/20 dark:ring-amber-400/30">
       <InfoIcon className="h-3 w-3" />
       {flag}
     </span>
@@ -261,20 +262,20 @@ function AppCard({ app }: { app: App }) {
     <li className="min-w-0">
       <Link
         to={detailPath(app.host, app.live_state)}
-        className="group flex h-full flex-col rounded-card border border-line bg-surface p-4 shadow-card transition-all hover:-translate-y-px hover:border-accent-line hover:shadow-card-hover"
+        className="group flex h-full flex-col rounded-lg border border-border bg-card p-4 shadow-sm transition-all hover:-translate-y-px hover:border-azure/40 hover:shadow-md"
       >
         <div className="flex items-start gap-3">
           <Monogram
             name={label}
             seed={app.host}
-            className="h-10 w-14 shrink-0 rounded-tile border border-line-soft"
+            className="h-10 w-14 shrink-0 rounded-md border border-border/60"
             textClassName="text-sm"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-ink group-hover:text-accent">
+            <p className="truncate text-sm font-semibold text-foreground group-hover:text-azure">
               {label}
             </p>
-            <p className="truncate font-mono text-xs text-faint">{app.host}</p>
+            <p className="truncate font-mono text-xs text-muted-foreground/70">{app.host}</p>
           </div>
           <StatusBadge state={app.live_state} />
         </div>
@@ -311,10 +312,10 @@ function Fact({
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-[11px] uppercase tracking-wide text-faint">{term}</dt>
+      <dt className="text-[11px] uppercase tracking-wide text-muted-foreground/70">{term}</dt>
       <dd
         className={`truncate ${mono ? 'font-mono' : ''} ${
-          tone === 'warn' ? 'font-medium text-amber-800' : 'text-muted'
+          tone === 'warn' ? 'font-medium text-amber-800 dark:text-amber-300' : 'text-muted-foreground'
         }`}
         title={value}
       >
@@ -325,106 +326,133 @@ function Fact({
 }
 
 /**
- * Table view. Real table semantics, but the whole row is a click target the
- * way assembled.work's list rows are — the label stays a proper link so
- * keyboards and middle-clicks still work.
+ * List view, on assembled.work's `app-list-grid` template (index.css): the
+ * header strip and every row share one grid definition, so the columns line
+ * up instead of each row negotiating its own widths. Columns drop from the
+ * right as the viewport narrows — app, then link, then status and expires,
+ * then last active, then tasks — and the app itself never goes.
+ *
+ * A grid, not a `<table>`: the shared template is the whole point and a
+ * table cannot participate in it, so the roles are stated explicitly and
+ * the header strip is a real row rather than decoration.
  */
 function AppTable({ apps }: { apps: App[] }) {
   const navigate = useNavigate()
 
   return (
     <Panel className="overflow-hidden">
-      <div className="overflow-x-auto">
-        {/* Columns drop from the right as the viewport narrows, the way
-            assembled.work's list grid does; nothing important is ever the
-            first to go. */}
-        <table className="w-full min-w-[34rem] border-collapse">
-          <thead className="border-b border-line bg-canvas/60">
-            <tr>
-              <th className={TH}>App</th>
-              <th className={TH}>State</th>
-              <th className={`${TH} hidden md:table-cell`}>Access</th>
-              <th className={`${TH} hidden md:table-cell`}>Expires</th>
-              <th className={`${TH} hidden lg:table-cell`}>Last active</th>
-              <th className={`${TH} hidden text-right lg:table-cell`}>Tasks</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-line-soft">
-            {apps.map((app) => {
-              const expiry = expirySummary(app.expires_at)
-              const label = app.label || app.app_key || app.host
-              return (
-                <tr
-                  key={app.host}
-                  onClick={(event) => {
-                    // Let a real click on the link (or a modified click) win.
-                    if (event.defaultPrevented || event.metaKey || event.ctrlKey) return
-                    navigate(detailPath(app.host, app.live_state))
-                  }}
-                  className="cursor-pointer transition-colors hover:bg-accent-soft/40"
-                >
-                  <td className={`${TD} max-w-sm`}>
-                    <div className="flex items-center gap-3">
-                      <Monogram
-                        name={label}
-                        seed={app.host}
-                        className="h-9 w-12 shrink-0 rounded-tile border border-line-soft"
-                        textClassName="text-xs"
-                      />
-                      <div className="min-w-0">
-                        <Link
-                          to={detailPath(app.host, app.live_state)}
-                          className="block truncate font-medium text-ink hover:text-accent hover:underline"
-                        >
-                          {label}
-                        </Link>
-                        <div className="truncate font-mono text-xs text-faint">{app.host}</div>
-                      </div>
-                    </div>
-                  </td>
+      <div role="table" aria-label="Apps">
+        <div
+          role="row"
+          className="app-list-grid gap-3 border-b border-border bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground"
+        >
+          <span role="columnheader">App</span>
+          <span role="columnheader" className="hidden md:block">
+            Link
+          </span>
+          <span role="columnheader" className="hidden lg:block">
+            State
+          </span>
+          <span role="columnheader" className="hidden lg:block">
+            Expires
+          </span>
+          <span role="columnheader" className="hidden xl:block">
+            Last active
+          </span>
+          <span role="columnheader" className="hidden 2xl:block">
+            Tasks
+          </span>
+        </div>
 
-                  <td className={TD}>
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <StatusBadge state={app.live_state} />
-                      <AttentionFlag app={app} />
-                    </div>
-                  </td>
-
-                  <td className={`${TD} hidden md:table-cell`}>{accessSummary(app)}</td>
-
-                  <td className={`${TD} hidden md:table-cell`}>
-                    <span
-                      title={app.expires_at ? formatDate(app.expires_at) : 'No expiry set'}
-                      className={
-                        expiry.tone === 'soon' || expiry.tone === 'past'
-                          ? 'font-medium text-amber-800'
-                          : expiry.tone === 'never'
-                            ? 'text-faint'
-                            : undefined
-                      }
-                    >
-                      {expiry.text}
-                    </span>
-                  </td>
-
-                  <td className={`${TD} hidden lg:table-cell`}>
-                    <span title={app.last_active ? formatDateTime(app.last_active) : undefined}>
-                      {relativeTime(app.last_active)}
-                    </span>
-                  </td>
-
-                  <td className={`${TD} hidden text-right font-mono text-xs lg:table-cell`}>
-                    {app.running_count}/{app.desired_count}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div className="divide-y divide-border/60">
+          {apps.map((app) => (
+            <AppListRow key={app.host} app={app} navigate={navigate} />
+          ))}
+        </div>
       </div>
     </Panel>
   )
 }
 
-const TH = 'px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-faint'
-const TD = 'px-4 py-3 align-middle text-sm text-muted'
+/** One row of the list view; the columns come from the shared template. */
+function AppListRow({
+  app,
+  navigate,
+}: {
+  app: App
+  navigate: ReturnType<typeof useNavigate>
+}) {
+  const expiry = expirySummary(app.expires_at)
+  const label = app.label || app.app_key || app.host
+
+  return (
+    <div
+      role="row"
+      onClick={(event) => {
+        // Let a real click on a link or button (or a modified click) win.
+        if (event.defaultPrevented || event.metaKey || event.ctrlKey) return
+        navigate(detailPath(app.host, app.live_state))
+      }}
+      className="app-list-grid cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors hover:bg-accent/40"
+    >
+      <div role="cell" className="flex min-w-0 items-center gap-3">
+        <Monogram
+          name={label}
+          seed={app.host}
+          className="h-9 w-14 shrink-0 rounded-md border border-border/60"
+          textClassName="text-xs"
+        />
+        <div className="min-w-0">
+          <Link
+            to={detailPath(app.host, app.live_state)}
+            className="block truncate text-sm font-medium text-foreground hover:text-azure hover:underline"
+          >
+            {label}
+          </Link>
+          <div className="truncate text-xs text-muted-foreground">{accessSummary(app)}</div>
+        </div>
+      </div>
+
+      <div role="cell" className="hidden min-w-0 md:block">
+        <LinkField
+          url={`https://${app.host}`}
+          kind={app.live_state === 'awake' ? 'live' : 'idle'}
+        />
+      </div>
+
+      <div role="cell" className="hidden justify-self-start lg:block">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusBadge state={app.live_state} />
+          <AttentionFlag app={app} />
+        </div>
+      </div>
+
+      <span
+        role="cell"
+        title={app.expires_at ? formatDate(app.expires_at) : 'No expiry set'}
+        className={`hidden whitespace-nowrap text-xs lg:block ${
+          expiry.tone === 'soon' || expiry.tone === 'past'
+            ? 'font-medium text-amber-800 dark:text-amber-300'
+            : 'text-muted-foreground'
+        }`}
+      >
+        {expiry.text}
+      </span>
+
+      <span
+        role="cell"
+        title={app.last_active ? formatDateTime(app.last_active) : undefined}
+        className="hidden whitespace-nowrap text-xs text-muted-foreground xl:block"
+      >
+        {relativeTime(app.last_active)}
+      </span>
+
+      <span
+        role="cell"
+        className="hidden whitespace-nowrap font-mono text-xs text-muted-foreground 2xl:block"
+      >
+        {app.running_count}/{app.desired_count}
+      </span>
+    </div>
+  )
+}

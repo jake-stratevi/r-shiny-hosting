@@ -22,9 +22,9 @@ export function PageHeader({
   return (
     <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
-        {description ? <p className="mt-1 text-sm text-muted">{description}</p> : null}
-        {meta ? <p className="mt-1 text-xs text-faint">{meta}</p> : null}
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">{title}</h1>
+        {description ? <p className="mt-1 text-sm text-muted-foreground">{description}</p> : null}
+        {meta ? <p className="mt-1 text-xs text-muted-foreground/70">{meta}</p> : null}
       </div>
       {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
     </div>
@@ -39,7 +39,7 @@ export function Panel({
   className?: string
 }) {
   return (
-    <div className={`rounded-card border border-line bg-surface shadow-card ${className}`}>
+    <div className={`rounded-lg border border-border bg-card shadow-sm ${className}`}>
       {children}
     </div>
   )
@@ -64,11 +64,11 @@ export function SectionCard({
 }) {
   return (
     <Panel className="overflow-hidden">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-line-soft px-5 py-3.5">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/60 px-5 py-3.5">
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-ink">{title}</h2>
+          <h2 className="text-sm font-semibold text-foreground">{title}</h2>
           {description ? (
-            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-faint">{description}</p>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground/70">{description}</p>
           ) : null}
         </div>
         {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
@@ -80,8 +80,8 @@ export function SectionCard({
 
 export function Loading({ label = 'Loading' }: { label?: string }) {
   return (
-    <div className="flex items-center gap-3 py-16 text-sm text-faint" role="status">
-      <span className="h-3 w-3 animate-spin rounded-full border-2 border-line border-t-accent" />
+    <div className="flex items-center gap-3 py-16 text-sm text-muted-foreground/70" role="status">
+      <span className="h-3 w-3 animate-spin rounded-full border-2 border-border border-t-accent" />
       {label}…
     </div>
   )
@@ -98,9 +98,9 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="rounded-card border border-dashed border-line bg-surface/60 px-8 py-14 text-center">
+    <div className="rounded-lg border border-dashed border-border bg-card/60 px-8 py-14 text-center">
       <svg
-        className="mx-auto mb-5 h-20 w-20 text-accent/25"
+        className="mx-auto mb-5 h-20 w-20 text-azure/25"
         viewBox="0 0 96 96"
         fill="none"
         aria-hidden="true"
@@ -116,9 +116,9 @@ export function EmptyState({
           strokeLinecap="round"
         />
       </svg>
-      <p className="text-base font-medium text-ink">{title}</p>
+      <p className="text-base font-medium text-foreground">{title}</p>
       {children ? (
-        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">{children}</div>
+        <div className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted-foreground">{children}</div>
       ) : null}
       {action ? <div className="mt-6 flex justify-center">{action}</div> : null}
     </div>
@@ -128,9 +128,9 @@ export function EmptyState({
 /** 403 from anything under /api/v1/apps: not an admin. */
 export function NoAdminAccess() {
   return (
-    <div className="mx-auto max-w-lg rounded-card border border-line bg-surface px-10 py-12 text-center shadow-card">
-      <h2 className="text-base font-semibold text-ink">You don’t have admin access</h2>
-      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted">
+    <div className="mx-auto max-w-lg rounded-lg border border-border bg-card px-10 py-12 text-center shadow-sm">
+      <h2 className="text-base font-semibold text-foreground">You don’t have admin access</h2>
+      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
         This area is limited to platform administrators. Your sign-in worked
         fine — the account just isn’t on the admin list.
       </p>
@@ -148,9 +148,9 @@ export function NoAdminAccess() {
  */
 export function NoCreateAccess() {
   return (
-    <div className="mx-auto max-w-lg rounded-card border border-line bg-surface px-10 py-12 text-center shadow-card">
-      <h2 className="text-base font-semibold text-ink">You can’t create apps</h2>
-      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted">
+    <div className="mx-auto max-w-lg rounded-lg border border-border bg-card px-10 py-12 text-center shadow-sm">
+      <h2 className="text-base font-semibold text-foreground">You can’t create apps</h2>
+      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
         Creating an app is its own permission, separate from admin — a new app
         gets its own hostname, container and credentials, so the list of people
         who may make one is kept short and lives in Terraform.
@@ -181,14 +181,16 @@ export function ErrorState({
         : 'Something went wrong'
 
   return (
-    <div className="rounded-card border border-red-200 bg-red-50/70 px-6 py-5">
-      <p className="text-sm font-semibold text-red-900">{title}</p>
-      <p className="mt-1.5 text-sm leading-relaxed text-red-800">{error.message}</p>
+    <div className="rounded-lg border border-red-200 bg-red-50/70 px-6 py-5 dark:border-red-400/25 dark:bg-red-400/10">
+      <p className="text-sm font-semibold text-red-900 dark:text-red-200">{title}</p>
+      <p className="mt-1.5 text-sm leading-relaxed text-red-800 dark:text-red-300">
+        {error.message}
+      </p>
       {onRetry ? (
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-tile border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-800 transition-colors hover:bg-red-100"
+          className="mt-4 rounded-md border border-red-300 bg-card px-3 py-1.5 text-sm font-medium text-red-800 transition-colors hover:bg-red-100 dark:border-red-400/30 dark:text-red-300 dark:hover:bg-red-400/15"
         >
           Try again
         </button>
@@ -215,13 +217,13 @@ export function Notice({
 }) {
   const skin =
     tone === 'danger'
-      ? 'border-red-200 bg-red-50/70 text-red-900'
+      ? 'border-red-200 bg-red-50/70 text-red-900 dark:border-red-400/25 dark:bg-red-400/10 dark:text-red-200'
       : tone === 'warning'
-        ? 'border-amber-200 bg-amber-50/80 text-amber-900'
-        : 'border-accent-line bg-accent-soft text-ink'
+        ? 'border-amber-200 bg-amber-50/80 text-amber-900 dark:border-amber-400/25 dark:bg-amber-400/10 dark:text-amber-200'
+        : 'border-azure/30 bg-azure/5 text-foreground'
 
   return (
-    <div className={`rounded-card border px-5 py-4 ${skin}`}>
+    <div className={`rounded-lg border px-5 py-4 ${skin}`}>
       <p className="text-sm font-semibold">{title}</p>
       {children ? <div className="mt-1 text-sm leading-relaxed opacity-90">{children}</div> : null}
       {action ? <div className="mt-3">{action}</div> : null}

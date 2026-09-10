@@ -138,6 +138,13 @@ resource "aws_ecs_task_definition" "this" {
       { name = "APP_LOG_GROUP", value = aws_cloudwatch_log_group.apps.name },
       { name = "COGNITO_USER_POOL_ID", value = data.aws_ssm_parameter.cognito_user_pool_id.value },
       { name = "COGNITO_CLIENT_ID", value = aws_cognito_user_pool_client.this.id },
+
+      # Sign-out needs the hosted UI's address to end the Cognito session
+      # (expiring the ALB cookie alone just lets the ALB re-authenticate
+      # from its own still-valid session). This SSM value is the domain
+      # PREFIX; the service completes it with AWS_REGION, the same rule the
+      # ALB's authenticate action uses.
+      { name = "COGNITO_DOMAIN", value = data.aws_ssm_parameter.cognito_domain.value },
     ]
 
     logConfiguration = {

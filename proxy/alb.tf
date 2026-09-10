@@ -44,6 +44,53 @@ resource "aws_lb_target_group" "proxy" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# THE ONE UNAUTHENTICATED RULE ON THIS LISTENER. Read before touching.
+#
+# Sign-out has a chicken-and-egg problem: every other rule authenticates
+# first, so a just-signed-out visitor landing anywhere on a portal host is
+# bounced straight back into Cognito -- and since their Cognito session was
+# just ended, the hosted UI shows a login page that a federated user clears
+# in one click. Sign-out would appear to do nothing.
+#
+# So the page you land on after signing out is served WITHOUT an
+# authenticate action. This is a deliberate hole in the auth perimeter, kept
+# safe by being as small as one can be:
+#
+#   * path_pattern is the EXACT path, not a prefix. Nothing else on the
+#     listener loses its auth step.
+#   * /__proxy/ is reserved on every hostname and is never forwarded to an
+#     app (see the proxy's request handler), so this cannot shadow a route.
+#   * the page is static branded HTML with no identity in it and no call to
+#     any API -- it reads the same for everyone, signed in or not.
+#   * the condition is scoped to the portal hosts; app hostnames 404.
+#
+# If you ever widen that path to a prefix, you are punching a real hole.
+# Priority 4900 sits just under the 5000 catch-all so it wins for this one
+# path (CLAUDE.md's register).
+# ---------------------------------------------------------------------------
+resource "aws_lb_listener_rule" "signed_out" {
+  listener_arn = data.aws_ssm_parameter.https_listener_arn.value
+  priority     = 4900
+
+  condition {
+    host_header {
+      values = local.portal_hosts
+    }
+  }
+
+  condition {
+    path_pattern {
+      values = ["/__proxy/signed-out"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.proxy.arn
+  }
+}
+
 resource "aws_lb_listener_rule" "this" {
   listener_arn = data.aws_ssm_parameter.https_listener_arn.value
   priority     = var.listener_rule_priority

@@ -43,8 +43,15 @@ decision), never `__`-rows:
               "label": "Treatment Pathway Dashboard",
               "description": "Sankey of treatment sequences...",
               "url": "https://dashboard.tools.stratevi.com",
-              "live_state": "asleep" } ] }
+              "live_state": "asleep",
+              "expires_at": 1793491200,
+              "last_active": 1789000000 } ] }
 ```
+`expires_at` and `last_active` are `number | null` (absent attribute →
+null). They are on the MENU payload, not just the admin one, because the
+card shows them: "an app I use disappears in six days" is the reader's
+business, not only an administrator's. Neither is sensitive — the caller is
+already entitled to open the app.
 
 ### GET /api/v1/apps  (admin)
 Array of full app objects:
@@ -99,8 +106,12 @@ happen behind the ALB).
 - Audit `limit` ≥ 1, no server ceiling (DynamoDB's 1 MB page cap applies);
   the UI pages by 50.
 - Audit `event` is an **open enum**; currently: `allow`, `deny`, `wake`,
-  `sleep`, `force_sleep`, `expired`, `config_change`. Events also carry
-  `outcome` where useful. Render unknown names neutrally.
+  `sleep`, `force_sleep`, `expired`, `config_change`, `app_created`,
+  `build_started`, `build_succeeded`, `build_failed`, `provision_failed`,
+  `signed_out`. Events also carry `outcome` where useful. Render unknown
+  names neutrally. Note `signed_out` partitions under the PORTAL hostname,
+  which has no app row — so it is in DynamoDB and CloudWatch but never
+  appears in an app's audit viewer. Read it with a direct query.
 - `GET /me` is 200 for every authenticated user, `is_admin: false` included.
 - Empty PATCH body → 400. The `config_change` audit lists fields *written*
   (not a value-diff — the UI sends diffs, keeping the two equivalent).

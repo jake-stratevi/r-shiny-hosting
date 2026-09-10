@@ -193,6 +193,32 @@ currently using.
 | `COGNITO_USER_POOL_ID` | The Hub pool. |
 | `COGNITO_CLIENT_ID` | The **one** shared app client whose callback list grows by one URL per created app. |
 
+### Sign-out
+
+Two more, **both or neither**, for `/__proxy/logout`. Signing out of this
+platform is two acts: expiring the ALB's session cookie shards (always done,
+no configuration needed) and ending the Cognito hosted-UI session (needs
+these). Without them the cookies still go, but Cognito still holds a session
+and the next visit signs the user back in silently — so a half-configured
+block is logged at ERROR on startup, exactly like the creation block, and for
+the same blast-radius reason it is not fatal.
+
+| Variable | Meaning |
+|---|---|
+| `COGNITO_DOMAIN` | The hosted UI. Either the **prefix** Cognito registered (what `platform/ssm.tf` exports as `cognito_domain`) — completed with `AWS_REGION` into `<prefix>.auth.<region>.amazoncognito.com` — or a full custom-domain hostname. Same rule the ALB action's `user_pool_domain` uses. |
+| `COGNITO_CLIENT_ID` | The shared app client. The **same** variable the creation block reads, read again here on purpose: sign-out must not depend on the wizard being deployed. |
+| `SIGNED_OUT_URL` | *Optional.* Where Cognito sends the browser after logout. Default `https://<the portal host of the request>/__proxy/signed-out`. Cognito matches this against the client's `LogoutURLs` **exactly**, so only override it if a different URL is what got registered. |
+
+`/__proxy/signed-out` is the landing page, and it is the one route in this
+service that must answer **without a session**. Every other path on a portal
+host sits behind the listener rule's `authenticate-cognito` action, which
+would bounce a just-signed-out visitor straight back into Cognito. It
+therefore needs its own listener rule with **no authenticate action** —
+priority `4900`, host `*.tools.stratevi.com`, path `/__proxy/signed-out`,
+forwarding to the proxy target group. Safe to expose: `/__proxy/` is reserved
+on every hostname and never forwarded to an app, and the page is static
+branded HTML with no identity in it.
+
 Anything required and missing is exit code 2 at startup, not a degraded mode.
 There are no other environment variables: nothing here reads a config file, a
 Parameter Store path, or a secret.

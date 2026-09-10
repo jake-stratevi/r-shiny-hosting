@@ -1,4 +1,5 @@
 import { screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MenuApp } from '../api/types'
 import { WAKE_HINT } from '../lib/appDisplay'
@@ -18,6 +19,10 @@ const tiles: MenuApp[] = [
     description: 'Sankey of treatment sequences.',
     url: 'https://dashboard.tools.stratevi.com',
     live_state: 'awake',
+    // Far enough out to stay "ok" rather than "soon", so the tone assertion
+    // below does not start failing a week before whenever this is read.
+    expires_at: Math.floor(Date.now() / 1000) + 90 * 86_400,
+    last_active: Math.floor(Date.now() / 1000) - 3_600,
   },
   {
     host: 'payer-survey.tools.stratevi.com',
@@ -25,6 +30,8 @@ const tiles: MenuApp[] = [
     description: 'Cross-tabs of the Q2 payer survey.',
     url: 'https://payer-survey.tools.stratevi.com',
     live_state: 'asleep',
+    expires_at: null,
+    last_active: null,
   },
 ]
 
@@ -63,6 +70,57 @@ describe('MenuPage', () => {
     expect(await screen.findAllByText(WAKE_HINT)).toHaveLength(1)
     expect(screen.getByText('Asleep')).toBeInTheDocument()
     expect(screen.getByText('Awake')).toBeInTheDocument()
+  })
+
+  it('puts the link field on every card, with Copy and Open of its own', async () => {
+    renderPage(<MenuPage />)
+
+    await screen.findByRole('link', { name: /Treatment Pathway Dashboard/ })
+
+    // The host, in the mono chip — not the full URL.
+    expect(screen.getByText('dashboard.tools.stratevi.com')).toBeInTheDocument()
+    expect(screen.getByText('payer-survey.tools.stratevi.com')).toBeInTheDocument()
+
+    expect(
+      screen.getByRole('button', { name: 'Copy link to dashboard.tools.stratevi.com' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: 'Open dashboard.tools.stratevi.com' }),
+    ).toHaveAttribute('href', 'https://dashboard.tools.stratevi.com')
+  })
+
+  it('copies the whole URL rather than following the card link', async () => {
+    // userEvent installs its own clipboard stub, which is the one the button
+    // writes to; reading it back is the honest assertion.
+    const user = userEvent.setup()
+    renderPage(<MenuPage />)
+
+    await user.click(
+      await screen.findByRole('button', {
+        name: 'Copy link to dashboard.tools.stratevi.com',
+      }),
+    )
+
+    expect(await navigator.clipboard.readText()).toBe(
+      'https://dashboard.tools.stratevi.com',
+    )
+    // The card's own link was not followed: the page is still the menu.
+    expect(
+      await screen.findByRole('button', { name: 'Link copied' }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument()
+  })
+
+  it('says how ready each tool is as a metadata row with its own icon', async () => {
+    renderPage(<MenuPage />)
+
+    // Every card gets exactly one readiness row, and it is never empty: the
+    // menu contract carries no expiry or last-active, so those rows are not
+    // rendered at all rather than rendered as "—".
+    for (const text of ['Ready now', WAKE_HINT]) {
+      const row = await screen.findByText(text)
+      expect(row.parentElement?.querySelector('svg')).toBeTruthy()
+    }
   })
 
   it('gives a creator a "New app" card that opens the wizard', async () => {

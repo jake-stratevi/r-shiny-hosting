@@ -339,6 +339,11 @@ def menu_json(app: App, state: ServiceState | None, now: float) -> dict[str, Any
 
     Notably no ``allowed_emails``: the menu is served to every authenticated
     user, and who else can see an app is not their business.
+
+    ``expires_at`` and ``last_active`` ARE here, though they read like admin
+    detail. "The tool I use disappears in six days" is the reader's business
+    too, and the tile shows it. Neither leaks anything: the caller is
+    already entitled to open this app.
     """
     return {
         "host": app.host,
@@ -346,6 +351,8 @@ def menu_json(app: App, state: ServiceState | None, now: float) -> dict[str, Any
         "description": app.description,
         "url": f"https://{app.host}",
         "live_state": live_state(app, state, now),
+        "expires_at": app.expires_at or None,
+        "last_active": app.last_active or None,
     }
 
 

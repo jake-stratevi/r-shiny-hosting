@@ -152,7 +152,7 @@ export function AppSettingsForm({
       <SectionCard
         title="Details"
         description="What the tile says. Clients read both of these."
-        bodyClassName="divide-y divide-line-soft"
+        bodyClassName="divide-y divide-border/60"
       >
         <Field label="Label" hint="Shown on the tile and in the admin list.">
           <input
@@ -176,7 +176,7 @@ export function AppSettingsForm({
       <SectionCard
         title="Access"
         description="Everyone signs in through Cognito first. This narrows it from there — the proxy enforces it on every request."
-        bodyClassName="divide-y divide-line-soft"
+        bodyClassName="divide-y divide-border/60"
       >
         <Field label="Who can open it">
           <select
@@ -194,7 +194,7 @@ export function AppSettingsForm({
           </select>
 
           {reserved ? (
-            <p className="mt-2 text-xs text-amber-800">
+            <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
               This app carries a reserved access mode, so the proxy refuses every request
               to it. Pick one of the two supported modes to fix it.
             </p>
@@ -207,11 +207,11 @@ export function AppSettingsForm({
                 onChange={(next) => set('allowed_emails', next)}
               />
               {lockingEveryoneOut ? (
-                <p className="mt-1.5 text-xs text-amber-800">
+                <p className="mt-1.5 text-xs text-amber-800 dark:text-amber-300">
                   With no addresses listed, nobody can open this app.
                 </p>
               ) : (
-                <p className="mt-1.5 text-xs text-faint">
+                <p className="mt-1.5 text-xs text-muted-foreground/70">
                   {draft.allowed_emails.length}{' '}
                   {draft.allowed_emails.length === 1 ? 'person' : 'people'} can open it.
                 </p>
@@ -224,7 +224,7 @@ export function AppSettingsForm({
       <SectionCard
         title="Runtime"
         description="How long a task stays up. Fargate bills per second, so these are the cost dials."
-        bodyClassName="divide-y divide-line-soft"
+        bodyClassName="divide-y divide-border/60"
       >
         <Field
           label="Idle timeout"
@@ -239,7 +239,7 @@ export function AppSettingsForm({
               onChange={(e) => set('idle_minutes', e.target.value)}
               className={`${inputClass} w-28`}
             />
-            <span className="text-sm text-faint">minutes</span>
+            <span className="text-sm text-muted-foreground/70">minutes</span>
           </div>
         </Field>
 
@@ -256,7 +256,7 @@ export function AppSettingsForm({
               onChange={(e) => set('max_session_hours', e.target.value)}
               className={`${inputClass} w-28`}
             />
-            <span className="text-sm text-faint">
+            <span className="text-sm text-muted-foreground/70">
               {Number(draft.max_session_hours) === 0 ? 'uncapped' : 'hours'}
             </span>
           </div>
@@ -266,12 +266,12 @@ export function AppSettingsForm({
       <SectionCard
         title="Lifecycle"
         description="When access ends, and whether the app answers at all."
-        bodyClassName="divide-y divide-line-soft"
+        bodyClassName="divide-y divide-border/60"
       >
         <Field label="Expiry" hint="A date, or a deliberate never. No silent default.">
           <ExpiryPicker value={draft.expires_at} onChange={(next) => set('expires_at', next)} />
           {app.status === 'expired' ? (
-            <p className="mt-2 text-xs text-amber-800">
+            <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
               This app has already expired. Give it a future date to bring it back.
             </p>
           ) : null}
@@ -285,10 +285,10 @@ export function AppSettingsForm({
                 type="button"
                 aria-pressed={draft.status === value}
                 onClick={() => set('status', value)}
-                className={`rounded-tile border px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                className={`rounded-md border px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
                   draft.status === value
-                    ? 'border-accent bg-accent-soft text-accent'
-                    : 'border-line bg-surface text-muted hover:bg-canvas'
+                    ? 'border-azure bg-azure/10 text-azure'
+                    : 'border-border bg-card text-muted-foreground hover:bg-background'
                 }`}
               >
                 {value}
@@ -299,11 +299,11 @@ export function AppSettingsForm({
       </SectionCard>
 
       {confirmingDisable ? (
-        <div className="rounded-card border border-amber-300 bg-amber-50 px-5 py-4">
-          <p className="text-sm font-semibold text-amber-900">
+        <div className="rounded-lg border border-amber-300 dark:border-amber-400/30 bg-amber-50 dark:bg-amber-400/10 px-5 py-4">
+          <p className="text-sm font-semibold text-amber-900 dark:text-amber-200">
             Disable {app.label || app.host}?
           </p>
-          <p className="mt-1 text-sm leading-relaxed text-amber-900/90">
+          <p className="mt-1 text-sm leading-relaxed text-amber-900/90 dark:text-amber-200/90">
             Anyone who opens it will get the refusal page, and its running task is scaled
             to zero. Nothing is deleted, and you can re-enable it here at any time.
           </p>
@@ -325,7 +325,7 @@ export function AppSettingsForm({
       {error ? <InlineError>{error}</InlineError> : null}
 
       {/* Sticky, so the save is reachable from anywhere in a long form. */}
-      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 rounded-t-card bg-canvas/95 px-1 py-4 backdrop-blur">
+      <div className="sticky bottom-0 -mx-1 flex flex-wrap items-center gap-3 rounded-t-lg border-t border-border/60 bg-background/95 px-1 py-4 backdrop-blur">
         <Button type="submit" disabled={!dirty || saving}>
           {saving ? 'Saving…' : 'Save changes'}
         </Button>
@@ -342,13 +342,13 @@ export function AppSettingsForm({
           Discard
         </Button>
         {saved && !dirty ? (
-          <span className="flex items-center gap-1.5 text-sm text-emerald-700">
+          <span className="flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-300">
             <CheckIcon className="h-4 w-4" />
             Saved.
           </span>
         ) : null}
         {dirty && !saved ? (
-          <span className="text-sm text-faint">
+          <span className="text-sm text-muted-foreground/70">
             {Object.keys(patch).length}{' '}
             {Object.keys(patch).length === 1 ? 'unsaved change' : 'unsaved changes'}
           </span>
@@ -359,7 +359,7 @@ export function AppSettingsForm({
 }
 
 const inputClass =
-  'rounded-tile border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent disabled:bg-canvas'
+  'rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-azure disabled:bg-background'
 
 /**
  * The two-column definition layout: the label and its explanation on the
@@ -377,8 +377,8 @@ function Field({
   return (
     <div className="grid gap-x-8 gap-y-2 px-5 py-5 md:grid-cols-field">
       <div>
-        <div className="text-sm font-medium text-ink">{label}</div>
-        {hint ? <p className="mt-1 text-xs leading-relaxed text-faint">{hint}</p> : null}
+        <div className="text-sm font-medium text-foreground">{label}</div>
+        {hint ? <p className="mt-1 text-xs leading-relaxed text-muted-foreground/70">{hint}</p> : null}
       </div>
       <div className="min-w-0">{children}</div>
     </div>

@@ -1,0 +1,24 @@
+﻿aws_codebuild_project.app_build: Creating...
+aws_codebuild_project.app_build: Creation complete after 1s [id=arn:aws:codebuild:us-east-1:652063276768:project/shiny-app-build]
+data.aws_iam_policy_document.task: Reading...
+aws_ecs_task_definition.this: Creating...
+data.aws_iam_policy_document.task: Read complete after 0s [id=3037956715]
+aws_iam_role_policy.task: Modifying... [id=shiny-proxy-task:shiny-proxy-task]
+aws_iam_role_policy.task: Modifications complete after 0s [id=shiny-proxy-task:shiny-proxy-task]
+aws_ecs_task_definition.this: Creation complete after 0s [id=shiny-proxy]
+aws_ecs_service.this: Modifying... [id=arn:aws:ecs:us-east-1:652063276768:service/shiny-cluster/shiny-proxy]
+aws_ecs_service.this: Modifications complete after 1s [id=arn:aws:ecs:us-east-1:652063276768:service/shiny-cluster/shiny-proxy]
+
+Apply complete! Resources: 2 added, 2 changed, 0 destroyed.
+
+Outputs:
+
+app_role_boundary_arn = "arn:aws:iam::652063276768:policy/shiny-app-boundary"
+apps_table_name = "shiny-proxy-apps"
+audit_table_name = "shiny-proxy-audit"
+codebuild_project_name = "shiny-app-build"
+docker_push_commands = <sensitive>
+ecr_repository = "652063276768.dkr.ecr.us-east-1.amazonaws.com/shiny-proxy"
+ecs_service_name = "shiny-proxy"
+uploads_bucket_name = "shiny-portal-uploads-652063276768"
+url = <sensitive>

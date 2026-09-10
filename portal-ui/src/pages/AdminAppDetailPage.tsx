@@ -56,7 +56,7 @@ export function AdminAppDetailPage() {
       <nav className="mb-4">
         <Link
           to="/admin"
-          className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-azure"
         >
           <ArrowLeftIcon className="h-4 w-4" />
           All apps
@@ -107,15 +107,15 @@ function Header({ app }: { app: App }) {
         <Monogram
           name={label}
           seed={app.host}
-          className="hidden h-14 w-20 shrink-0 rounded-card border border-line sm:flex"
+          className="hidden h-14 w-20 shrink-0 rounded-lg border border-border sm:flex"
           textClassName="text-lg"
         />
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="truncate text-2xl font-semibold tracking-tight text-ink">{label}</h1>
+            <h1 className="truncate text-2xl font-semibold tracking-tight text-foreground">{label}</h1>
             <StatusBadge state={app.live_state} title={liveStateHint(app.live_state) ?? undefined} />
           </div>
-          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted">
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
             <span className="font-mono text-xs">{app.host}</span>
             <Dot />
             <span>{accessSummary(app)}</span>
@@ -123,7 +123,7 @@ function Header({ app }: { app: App }) {
             <span
               className={
                 expiry.tone === 'past' || expiry.tone === 'soon'
-                  ? 'font-medium text-amber-800'
+                  ? 'font-medium text-amber-800 dark:text-amber-300'
                   : undefined
               }
             >
@@ -147,7 +147,7 @@ function Header({ app }: { app: App }) {
 }
 
 const Dot = () => (
-  <span aria-hidden="true" className="text-faint">
+  <span aria-hidden="true" className="text-muted-foreground/70">
     ·
   </span>
 )
@@ -285,10 +285,10 @@ function AtAGlance({ app }: { app: App }) {
 
   return (
     <Panel className="overflow-hidden xl:sticky xl:top-20">
-      <div className="border-b border-line-soft px-5 py-3 text-sm font-semibold text-ink">
+      <div className="border-b border-border/60 px-5 py-3 text-sm font-semibold text-foreground">
         At a glance
       </div>
-      <dl className="divide-y divide-line-soft text-sm">
+      <dl className="divide-y divide-border/60 text-sm">
         <GlanceRow term="Status">
           <StatusBadge state={app.live_state} />
         </GlanceRow>
@@ -297,7 +297,7 @@ function AtAGlance({ app }: { app: App }) {
           <span
             className={
               expiry.tone === 'soon' || expiry.tone === 'past'
-                ? 'font-medium text-amber-800'
+                ? 'font-medium text-amber-800 dark:text-amber-300'
                 : undefined
             }
           >
@@ -336,8 +336,8 @@ function AtAGlance({ app }: { app: App }) {
 function GlanceRow({ term, children }: { term: string; children: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-3 px-5 py-2.5">
-      <dt className="shrink-0 text-muted">{term}</dt>
-      <dd className="min-w-0 truncate text-right text-ink">{children}</dd>
+      <dt className="shrink-0 text-muted-foreground">{term}</dt>
+      <dd className="min-w-0 truncate text-right text-foreground">{children}</dd>
     </div>
   )
 }

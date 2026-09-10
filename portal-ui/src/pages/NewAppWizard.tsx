@@ -50,7 +50,7 @@ import { accessSummary, expiryPhrase, expirySummary } from '../lib/appDisplay'
 import { defaultExpiryEpoch, formatDate } from '../lib/time'
 
 const inputClass =
-  'rounded-tile border border-line bg-surface px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-accent disabled:bg-canvas disabled:text-faint'
+  'rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none transition-colors focus:border-azure disabled:bg-background disabled:text-muted-foreground/70'
 
 /**
  * The four-step create wizard plus a review, behind "+ New app".
@@ -120,7 +120,7 @@ export function NewAppWizard() {
       <nav className="mb-4">
         <Link
           to="/admin"
-          className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-accent"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-azure"
         >
           <ArrowLeftIcon className="h-4 w-4" />
           All apps
@@ -167,7 +167,7 @@ export function NewAppWizard() {
         </div>
       ) : null}
 
-      <div className="mt-6 flex items-center justify-between gap-3 border-t border-line pt-5">
+      <div className="mt-6 flex items-center justify-between gap-3 border-t border-border pt-5">
         <Button
           variant="ghost"
           disabled={index === 0 || submitting}
@@ -179,7 +179,7 @@ export function NewAppWizard() {
 
         <div className="flex items-center gap-3">
           {blocker && !showBlocker ? (
-            <span className="hidden text-xs text-faint sm:block">{blocker}</span>
+            <span className="hidden text-xs text-muted-foreground/70 sm:block">{blocker}</span>
           ) : null}
           {last ? (
             <Button
@@ -262,6 +262,16 @@ function DetailsStep({
         <div className="mt-2 min-h-[1.25rem]" aria-live="polite">
           <KeyVerdict check={keyCheck} typed={draft.key.trim() !== ''} />
         </div>
+
+        {/* The payoff, visible from the first keystroke. Shown from the typed
+            key while the check is in flight, then from the host the API
+            confirms — which is the authority on the domain. A refused key
+            gets no callout: that link is not going to be yours. */}
+        {draft.key.trim() !== '' && keyCheck.state !== 'rejected' ? (
+          <div className="mt-3 max-w-md">
+            <LinkCallout url={`https://${keyCheck.host ?? `${draft.key.trim()}.tools.stratevi.com`}`} />
+          </div>
+        ) : null}
       </Field>
 
       <Field label="Description" hint="One or two sentences. Clients read this.">
@@ -284,10 +294,10 @@ function DetailsStep({
             return (
               <label
                 key={size.id}
-                className={`flex cursor-pointer items-start gap-3 rounded-tile border px-3.5 py-3 transition-colors ${
+                className={`flex cursor-pointer items-start gap-3 rounded-md border px-3.5 py-3 transition-colors ${
                   chosen
-                    ? 'border-accent bg-accent-soft'
-                    : 'border-line bg-surface hover:border-accent-line'
+                    ? 'border-azure bg-azure/10'
+                    : 'border-border bg-card hover:border-azure/40'
                 }`}
               >
                 <input
@@ -299,13 +309,13 @@ function DetailsStep({
                   onChange={() => patch({ size: size.id as TaskSizeId })}
                 />
                 <span className="min-w-0">
-                  <span className="block text-sm font-medium text-ink">
+                  <span className="block text-sm font-medium text-foreground">
                     {size.label}
                   </span>
-                  <span className="block text-xs leading-relaxed text-muted">
+                  <span className="block text-xs leading-relaxed text-muted-foreground">
                     {size.blurb}
                   </span>
-                  <span className="mt-0.5 block text-xs text-faint">{size.hourly}</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground/70">{size.hourly}</span>
                 </span>
               </label>
             )
@@ -327,31 +337,33 @@ function KeyVerdict({
 
   if (check.state === 'checking') {
     return (
-      <p className="flex items-center gap-1.5 text-xs text-faint">
-        <span className="h-3 w-3 animate-spin rounded-full border-2 border-line border-t-accent" />
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground/70">
+        <span className="h-3 w-3 animate-spin rounded-full border-2 border-border border-t-accent" />
         Checking that key…
       </p>
     )
   }
   if (check.state === 'ok') {
+    // The hostname itself is not repeated here — the callout below the field
+    // is where the link lives, and saying it twice made the field noisy.
     return (
-      <p className="flex flex-wrap items-center gap-1.5 text-xs text-emerald-700">
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-300">
         <CheckIcon className="h-3.5 w-3.5" />
-        Available at <span className="font-mono text-ink">{check.host}</span>
+        That key is available.
       </p>
     )
   }
   if (check.state === 'rejected') {
     // The API's own words. See useKeyAvailability for why they are not reworded.
     return (
-      <p role="alert" className="text-xs text-red-700">
+      <p role="alert" className="text-xs text-red-700 dark:text-red-300">
         {check.reason}
       </p>
     )
   }
   if (check.state === 'unknown') {
     return (
-      <p role="alert" className="text-xs text-amber-800">
+      <p role="alert" className="text-xs text-amber-800 dark:text-amber-300">
         That key could not be checked: {check.reason}
       </p>
     )
@@ -484,7 +496,7 @@ function UploadStep({
         <ZipDropZone file={draft.file} onFile={take} busy={busy} />
 
         {draft.uploadError ? (
-          <p role="alert" className="mt-3 text-sm text-red-700">
+          <p role="alert" className="mt-3 text-sm text-red-700 dark:text-red-300">
             {draft.uploadError}
           </p>
         ) : null}
@@ -493,7 +505,7 @@ function UploadStep({
 
         {inspected ? <BundleConfirmation draft={draft} patch={patch} /> : null}
 
-        <p className="mt-4 text-xs leading-relaxed text-faint">
+        <p className="mt-4 text-xs leading-relaxed text-muted-foreground/70">
           Nothing is scanned for malware, deliberately — an R app is code we have
           chosen to run. Containment is the control: its own IAM role under a
           permissions boundary, its own container, no NAT egress, capped compute.
@@ -521,7 +533,7 @@ function UploadProgress({ draft }: { draft: CreateDraft }) {
 
   return (
     <div className="mt-4">
-      <div className="flex items-center justify-between text-xs text-muted">
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>{caption}</span>
         {draft.uploadPhase === 'uploading' ? <span>{pct}%</span> : null}
       </div>
@@ -531,7 +543,7 @@ function UploadProgress({ draft }: { draft: CreateDraft }) {
         aria-valuenow={draft.uploadPhase === 'uploading' ? pct : undefined}
         aria-valuemin={0}
         aria-valuemax={100}
-        className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-line"
+        className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-border"
       >
         <div
           className="h-full rounded-full bg-accent transition-[width] duration-150"
@@ -560,21 +572,21 @@ function BundleConfirmation({
   const packages = packagesFrom(draft)
 
   return (
-    <div className="mt-5 space-y-4 rounded-card border border-line bg-canvas/60 p-4">
+    <div className="mt-5 space-y-4 rounded-lg border border-border bg-background/60 p-4">
       {found ? (
         <>
           <dl className="grid gap-3 sm:grid-cols-2">
             <div>
-              <dt className="text-[11px] uppercase tracking-wide text-faint">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground/70">
                 Entrypoint
               </dt>
-              <dd className="mt-0.5 font-mono text-sm text-ink">{found.entrypoint}</dd>
+              <dd className="mt-0.5 font-mono text-sm text-foreground">{found.entrypoint}</dd>
             </div>
             <div>
-              <dt className="text-[11px] uppercase tracking-wide text-faint">
+              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground/70">
                 Packages read from
               </dt>
-              <dd className="mt-0.5 font-mono text-sm text-ink">
+              <dd className="mt-0.5 font-mono text-sm text-foreground">
                 {sourceLabel(found.source)}
               </dd>
             </div>
@@ -585,7 +597,7 @@ function BundleConfirmation({
               {found.warnings.map((warning) => (
                 <li
                   key={warning}
-                  className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-800"
+                  className="flex items-start gap-1.5 text-xs leading-relaxed text-amber-800 dark:text-amber-300"
                 >
                   <AlertIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   {warning}
@@ -608,12 +620,12 @@ function BundleConfirmation({
       <div>
         <label
           htmlFor="packages"
-          className="flex items-center gap-1.5 text-sm font-medium text-ink"
+          className="flex items-center gap-1.5 text-sm font-medium text-foreground"
         >
-          <PackageIcon className="h-4 w-4 text-faint" />
+          <PackageIcon className="h-4 w-4 text-muted-foreground/70" />
           R packages ({packages.length})
         </label>
-        <p className="mt-1 text-xs leading-relaxed text-faint">
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground/70">
           One per line. These are recorded on the release, so a rebuild installs the
           same set. Adding one costs build minutes; removing one that is used breaks
           the app at startup.
@@ -631,17 +643,17 @@ function BundleConfirmation({
         />
       </div>
 
-      <label className="flex w-fit cursor-pointer items-start gap-2 text-sm text-ink">
+      <label className="flex w-fit cursor-pointer items-start gap-2 text-sm text-foreground">
         <input
           type="checkbox"
           checked={draft.packagesConfirmed}
           disabled={packages.length === 0}
-          className="mt-0.5 h-4 w-4 rounded border-line accent-accent"
+          className="mt-0.5 h-4 w-4 rounded border-border accent-accent"
           onChange={(e) => patch({ packagesConfirmed: e.target.checked })}
         />
         <span>
           That is the right entrypoint and package list.
-          <span className="mt-0.5 block text-xs text-faint">
+          <span className="mt-0.5 block text-xs text-muted-foreground/70">
             First builds take 10–20 minutes because these compile from source.
           </span>
         </span>
@@ -693,7 +705,7 @@ function AccessStep({
             />
             <p
               className={`mt-1.5 text-xs ${
-                draft.allowed_emails.length === 0 ? 'text-amber-800' : 'text-faint'
+                draft.allowed_emails.length === 0 ? 'text-amber-800 dark:text-amber-300' : 'text-muted-foreground/70'
               }`}
             >
               {draft.allowed_emails.length === 0
@@ -720,14 +732,14 @@ function AccessStep({
             className={`${inputClass} w-28`}
             onChange={(e) => patch({ idle_minutes: e.target.value })}
           />
-          <span className="text-sm text-faint">minutes</span>
+          <span className="text-sm text-muted-foreground/70">minutes</span>
         </div>
         {suggestsShorterIdle ? (
-          <p className="mt-2 text-xs text-muted">
+          <p className="mt-2 text-xs text-muted-foreground">
             Models usually want 10 — at {size.hourly} an idle hour is real money.{' '}
             <button
               type="button"
-              className="text-accent underline underline-offset-2"
+              className="text-azure underline underline-offset-2"
               onClick={() =>
                 patch({ idle_minutes: String(size.suggestedIdleMinutes) })
               }
@@ -752,7 +764,7 @@ function AccessStep({
             className={`${inputClass} w-28`}
             onChange={(e) => patch({ max_session_hours: e.target.value })}
           />
-          <span className="text-sm text-faint">
+          <span className="text-sm text-muted-foreground/70">
             {Number(draft.max_session_hours) === 0 ? 'uncapped' : 'hours'}
           </span>
         </div>
@@ -789,7 +801,7 @@ function ExpiryStep({
               value={draft.expires_at}
               onChange={(expires_at) => patch({ expires_at })}
             />
-            <p className="mt-3 text-xs text-faint">
+            <p className="mt-3 text-xs text-muted-foreground/70">
               {draft.expires_at === null
                 ? 'It stays up until someone takes it down. An admin can set a date later.'
                 : `The reaper expires it at the end of ${formatDate(draft.expires_at)}. An admin can extend it at any time.`}
@@ -797,7 +809,7 @@ function ExpiryStep({
           </>
         ) : (
           <>
-            <p className="text-sm text-muted">
+            <p className="text-sm text-muted-foreground">
               Pick one. Most client work should have a date; internal tooling is
               usually the "never" case.
             </p>
@@ -847,13 +859,9 @@ function ReviewStep({
       description="Creating reserves the key, provisions the app's own repository and role, and starts the build. Everything below can be changed afterwards except the key."
     >
       <div className="space-y-5 px-5 py-5">
-        {/* The link is what all of this is for, so it gets top billing. */}
-        <div className="rounded-tile border border-accent-line bg-accent-soft px-4 py-3">
-          <p className="text-xs text-accent/80">The app’s link</p>
-          <p className="truncate font-mono text-sm text-ink">
-            https://{host ?? `${draft.key}.tools.stratevi.com`}
-          </p>
-        </div>
+        {/* The link is what all of this is for, so it gets top billing —
+            in the same callout the Details step showed it in. */}
+        <LinkCallout url={`https://${host ?? `${draft.key}.tools.stratevi.com`}`} />
 
         <ReviewGroup title="Details" onEdit={() => onEdit('details')}>
           <ReviewRow term="Label" value={draft.label} />
@@ -909,7 +917,7 @@ function ReviewStep({
           />
         </ReviewGroup>
 
-        <p className="text-xs leading-relaxed text-faint">
+        <p className="text-xs leading-relaxed text-muted-foreground/70">
           The build takes 10–20 minutes the first time, because every R package is
           compiled from source. You will be taken to a build screen that says which
           phase it is in; you can close the tab and come back to it.
@@ -930,14 +938,14 @@ function ReviewGroup({
 }) {
   return (
     <div>
-      <div className="flex items-center justify-between gap-3 border-b border-line-soft pb-1.5">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-faint">
+      <div className="flex items-center justify-between gap-3 border-b border-border/60 pb-1.5">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground/70">
           {title}
         </h3>
         <button
           type="button"
           onClick={onEdit}
-          className="text-xs text-accent underline underline-offset-2"
+          className="text-xs text-azure underline underline-offset-2"
         >
           Edit {title.toLowerCase()}
         </button>
@@ -958,9 +966,9 @@ function ReviewRow({
 }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-0.5">
-      <dt className="shrink-0 text-muted">{term}</dt>
+      <dt className="shrink-0 text-muted-foreground">{term}</dt>
       <dd
-        className={`min-w-0 max-w-[28rem] break-words text-right text-ink ${
+        className={`min-w-0 max-w-[28rem] break-words text-right text-foreground ${
           mono ? 'font-mono text-xs' : ''
         }`}
       >
@@ -989,7 +997,7 @@ function StepCard({
         <span className="flex items-center gap-2">
           <span
             aria-hidden="true"
-            className="flex h-7 w-7 items-center justify-center rounded-tile bg-accent-soft text-accent"
+            className="flex h-7 w-7 items-center justify-center rounded-md bg-azure/10 text-azure"
           >
             {icon}
           </span>
@@ -997,14 +1005,21 @@ function StepCard({
         </span>
       }
       description={description}
-      bodyClassName="divide-y divide-line-soft"
+      bodyClassName="divide-y divide-border/60"
     >
       {children}
     </SectionCard>
   )
 }
 
-/** The same two-column decision layout `AppSettingsForm` uses. */
+/**
+ * Label above input, helper text between them — assembled.work's `Create.vue`
+ * (`<div class="grid gap-2">`, Label, Input, help). Deliberately NOT the
+ * two-column `grid-cols-field` layout `AppSettingsForm` uses: that one is for
+ * a settings page, where the reader is scanning a list of existing decisions
+ * for the one they came to change. Here they are answering questions in
+ * order, and a single column is the shorter path down the card.
+ */
 function Field({
   label,
   hint,
@@ -1015,12 +1030,26 @@ function Field({
   children: ReactNode
 }) {
   return (
-    <div className="grid gap-x-8 gap-y-2 px-5 py-5 md:grid-cols-field">
-      <div>
-        <div className="text-sm font-medium text-ink">{label}</div>
-        {hint ? <p className="mt-1 text-xs leading-relaxed text-faint">{hint}</p> : null}
-      </div>
-      <div className="min-w-0">{children}</div>
+    <div className="px-5 py-5">
+      <div className="text-sm font-medium text-foreground">{label}</div>
+      {hint ? (
+        <p className="mt-1 max-w-2xl text-xs leading-relaxed text-muted-foreground/70">{hint}</p>
+      ) : null}
+      <div className="mt-2.5 min-w-0">{children}</div>
+    </div>
+  )
+}
+
+/**
+ * The link this whole wizard is for, as a tinted azure callout rather than a
+ * caption — their `Create.vue` shows it from the first keystroke, and the
+ * review step restates it in the same shape.
+ */
+function LinkCallout({ url }: { url: string }) {
+  return (
+    <div className="rounded-lg border border-azure/30 bg-azure/[0.07] px-3.5 py-2.5 dark:border-azure/25 dark:bg-azure/10">
+      <p className="text-xs text-azure">Your app’s link</p>
+      <p className="scroll-x-thin whitespace-nowrap font-mono text-sm text-foreground">{url}</p>
     </div>
   )
 }

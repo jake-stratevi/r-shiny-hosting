@@ -96,7 +96,7 @@ async function fillDetails(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Label'), 'Access Atlas')
   // The key is suggested from the label, then checked after the debounce.
   await waitFor(() => expect(validateKey).toHaveBeenCalled())
-  await screen.findByText('access-atlas.tools.stratevi.com')
+  await screen.findByText('That key is available.')
 }
 
 async function uploadBundle(
@@ -117,13 +117,17 @@ describe('NewAppWizard — key availability', () => {
     expect(validateKey).toHaveBeenCalledWith('atlas', expect.anything())
   })
 
-  it('shows the hostname the key resolves to', async () => {
+  it('shows the link the key resolves to, in the callout, from the first keystroke', async () => {
     const user = userEvent.setup()
     renderWizard()
 
     await user.type(screen.getByLabelText('Key'), 'access-atlas')
+
+    // Projected from what has been typed while the check is still in flight…
+    expect(screen.getByText('Your app’s link')).toBeInTheDocument()
+    // …then confirmed against the host the API returns.
     expect(
-      await screen.findByText('access-atlas.tools.stratevi.com'),
+      await screen.findByText('https://access-atlas.tools.stratevi.com'),
     ).toBeInTheDocument()
   })
 
@@ -132,15 +136,19 @@ describe('NewAppWizard — key availability', () => {
     renderWizard()
 
     await user.type(screen.getByLabelText('Key'), 'atlas')
-    await screen.findByText('access-atlas.tools.stratevi.com')
+    await screen.findByText('That key is available.')
 
     validateKey.mockResolvedValue({ ok: false, reason: 'Taken.' })
     await user.type(screen.getByLabelText('Key'), '-two')
 
-    // The green host line must not survive into the new key's check.
+    // The green line must not survive into the new key's check, and neither
+    // may the host the old key resolved to.
     await waitFor(() =>
-      expect(screen.queryByText('access-atlas.tools.stratevi.com')).not.toBeInTheDocument(),
+      expect(screen.queryByText('That key is available.')).not.toBeInTheDocument(),
     )
+    expect(
+      screen.queryByText('https://access-atlas.tools.stratevi.com'),
+    ).not.toBeInTheDocument()
     expect(await screen.findByText('Taken.')).toBeInTheDocument()
   })
 
@@ -188,7 +196,7 @@ describe('NewAppWizard — per-step gating', () => {
     renderWizard()
 
     await user.type(screen.getByLabelText('Key'), 'access-atlas')
-    await screen.findByText('access-atlas.tools.stratevi.com')
+    await screen.findByText('That key is available.')
 
     await user.click(continueButton())
     expect(blocker()).toHaveTextContent(/label/i)

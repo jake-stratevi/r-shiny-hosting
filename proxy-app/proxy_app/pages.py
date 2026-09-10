@@ -1,4 +1,4 @@
-"""The six branded responses the proxy serves itself.
+"""The branded responses the proxy serves itself.
 
 They are packaged with the app (``page.html``) and reference nothing external:
 ADR-0014 requires the 404/expired/starting pages to work when the database is
@@ -40,8 +40,16 @@ def render(
     mono: str = "",
     refresh: int = 0,
     retry_after: int = 0,
+    link: tuple[str, str] | None = None,
 ) -> web.Response:
-    """Build one branded page as a complete aiohttp response."""
+    """Build one branded page as a complete aiohttp response.
+
+    ``link`` is an optional ``(href, text)`` call to action. The href is
+    escaped like everything else, and callers must only ever build one from
+    a hostname the service already validated -- these pages are reachable
+    without a session, and a URL assembled from an unchecked ``Host`` header
+    would be an open redirect with a button on it.
+    """
     body = _TEMPLATE.substitute(
         refresh=(
             f'<meta http-equiv="refresh" content="{int(refresh)}">' if refresh else ""
@@ -51,6 +59,12 @@ def render(
         bar='<div class="bar"><span></span></div>' if refresh else "",
         paragraphs="".join(f"<p>{html.escape(text)}</p>" for text in paragraphs),
         mono=f"<p><code>{html.escape(mono)}</code></p>" if mono else "",
+        link=(
+            f'<p><a class="action" href="{html.escape(link[0], quote=True)}">'
+            f"{html.escape(link[1])}</a></p>"
+            if link
+            else ""
+        ),
     )
 
     headers = {
@@ -168,6 +182,47 @@ def unknown_host(host: str = "") -> web.Response:
             "mistyped."
         ],
         mono=host,
+    )
+
+
+def signed_out(sign_in_url: str = "", *, sso_ended: bool = True) -> web.Response:
+    """Where ``/__proxy/logout`` lands the browser once it is signed out.
+
+    This page is served WITHOUT a session -- that is the entire reason it
+    exists. Every other path on a portal host sits behind the listener
+    rule's ``authenticate-cognito`` action, so a signed-out visitor asking
+    for one is bounced to Cognito and signed straight back in, and the
+    sign-out they just performed appears to have done nothing. See the
+    ``/__proxy/signed-out`` rule this needs on the listener.
+
+    It is honest about the part the platform does not control. With Entra
+    federation, ending the Cognito session does NOT end the user's Microsoft
+    session: the next "Microsoft365" click signs them back in with no
+    password prompt. That is correct SSO behaviour, and a page that let
+    someone discover it by surprise -- on a shared laptop, say -- would be
+    worse than no sign-out button at all.
+    """
+    paragraphs = [
+        "You have been signed out of Stratevi tools on this browser. The "
+        "sign-in cookie has been cleared"
+        + (
+            " and the Stratevi single sign-on session has been closed."
+            if sso_ended
+            else "."
+        ),
+        "Your Microsoft 365 sign-in on this device is still active. Stratevi "
+        "tools cannot end it -- that session belongs to Microsoft and is "
+        "shared with Outlook, Teams and everything else you have open. "
+        "Signing in again here will therefore not ask you for a password.",
+        "On a shared or public computer, close every browser window, or sign "
+        "out of Microsoft 365 as well.",
+    ]
+    return render(
+        200,
+        title="Signed out",
+        heading="You are signed out",
+        paragraphs=paragraphs,
+        link=(sign_in_url, "Sign in again") if sign_in_url else None,
     )
 
 

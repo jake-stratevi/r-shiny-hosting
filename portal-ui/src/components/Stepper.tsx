@@ -40,10 +40,10 @@ export function Stepper({
             aria-hidden="true"
             className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-[13px] font-semibold transition-colors ${
               done
-                ? 'border-accent bg-accent text-white'
+                ? 'border-azure bg-azure text-white'
                 : active
-                  ? 'border-accent bg-accent-soft text-accent ring-2 ring-accent/20'
-                  : 'border-line bg-surface text-faint'
+                  ? 'border-azure bg-azure/10 text-azure ring-2 ring-azure/25'
+                  : 'border-border bg-card text-muted-foreground/70'
             }`}
           >
             {done ? <CheckIcon className="h-4 w-4" /> : index + 1}
@@ -54,10 +54,10 @@ export function Stepper({
           <span
             className={`hidden text-sm sm:inline ${
               active
-                ? 'font-semibold text-accent'
+                ? 'font-semibold text-azure'
                 : done
-                  ? 'font-medium text-ink'
-                  : 'text-faint'
+                  ? 'font-medium text-foreground'
+                  : 'text-muted-foreground/70'
             }`}
           >
             {step.label}
@@ -74,7 +74,7 @@ export function Stepper({
               <button
                 type="button"
                 onClick={() => onJump(index)}
-                className="flex items-center gap-2 rounded-tile px-0.5 py-0.5 transition-opacity hover:opacity-80"
+                className="flex items-center gap-2 rounded-md px-0.5 py-0.5 transition-opacity hover:opacity-80"
               >
                 {circle}
                 {text}
@@ -91,7 +91,7 @@ export function Stepper({
               <span
                 aria-hidden="true"
                 className={`h-0.5 min-w-[0.75rem] flex-1 rounded-full ${
-                  done ? 'bg-accent' : 'bg-line'
+                  done ? 'bg-azure' : 'bg-border'
                 }`}
               />
             ) : null}

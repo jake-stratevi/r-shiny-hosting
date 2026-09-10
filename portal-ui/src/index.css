@@ -2,9 +2,107 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+  Identity: warm "ink on paper" neutrals (a few degrees of warmth stop the
+  grayscale reading as unstyled scaffold) with ONE accent — azure — reserved
+  for focus rings and interactive highlights. Primary actions stay ink: black
+  buttons are the editorial move, azure is the wayfinding move. Status colors
+  (emerald awake, azure info, amber in progress, red failed) only ever encode
+  state.
+
+  The values are assembled.work's token system, adopted verbatim so the two
+  products read as one family. They are stored as bare HSL channels rather
+  than `hsl(...)` strings so Tailwind's opacity modifiers work: `bg-accent/40`,
+  `border-azure/40`, `text-muted-foreground/70` all resolve through
+  `hsl(var(--token) / <alpha-value>)` in tailwind.config.js.
+*/
 @layer base {
   :root {
+    --background: 40 25% 98.5%;
+    --foreground: 30 8% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 30 8% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 30 8% 8%;
+    --primary: 30 10% 10%;
+    --primary-foreground: 40 25% 98%;
+    --secondary: 40 14% 92%;
+    --secondary-foreground: 30 10% 10%;
+    --muted: 40 18% 95%;
+    --muted-foreground: 30 6% 42%;
+    --accent: 40 18% 94%;
+    --accent-foreground: 30 10% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 38 14% 89.5%;
+    --input: 38 14% 87%;
+    --ring: 199 89% 48%;
+
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+
+    --radius: 0.5rem;
+
+    --sidebar-background: 40 22% 96.5%;
+    --sidebar-foreground: 30 6% 26%;
+    --sidebar-primary: 30 10% 10%;
+    --sidebar-primary-foreground: 40 25% 98%;
+    --sidebar-accent: 40 14% 92%;
+    --sidebar-accent-foreground: 30 8% 24%;
+    --sidebar-border: 38 14% 89.5%;
+    --sidebar-ring: 199 89% 48%;
+
+    /* Shell geometry, so the rail and the gap beside it can never disagree. */
+    --sidebar-width: 16rem;
+    --sidebar-width-icon: 3rem;
+
     color-scheme: light;
+  }
+
+  .dark {
+    --background: 30 8% 6%;
+    --foreground: 40 20% 96%;
+    --card: 30 8% 8%;
+    --card-foreground: 40 20% 96%;
+    --popover: 30 8% 8%;
+    --popover-foreground: 40 20% 96%;
+    --primary: 40 20% 96%;
+    --primary-foreground: 30 10% 9%;
+    --secondary: 30 6% 14%;
+    --secondary-foreground: 40 20% 96%;
+    --muted: 30 6% 15%;
+    --muted-foreground: 35 8% 63%;
+    --accent: 30 6% 14%;
+    --accent-foreground: 40 20% 96%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 30 6% 15.5%;
+    --input: 30 6% 17.5%;
+    --ring: 199 89% 52%;
+
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
+
+    --sidebar-background: 30 8% 7.5%;
+    --sidebar-foreground: 40 15% 95%;
+    --sidebar-primary: 40 20% 96%;
+    --sidebar-primary-foreground: 30 10% 9%;
+    --sidebar-accent: 30 6% 15%;
+    --sidebar-accent-foreground: 40 15% 95%;
+    --sidebar-border: 30 6% 15.5%;
+    --sidebar-ring: 199 89% 52%;
+
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
   }
 
   html {
@@ -12,10 +110,66 @@
   }
 
   body {
-    @apply bg-canvas font-sans text-ink antialiased;
+    @apply bg-background font-sans text-foreground antialiased;
   }
 
   :focus-visible {
-    @apply outline-none ring-2 ring-accent/40 ring-offset-1 ring-offset-canvas;
+    @apply outline-none ring-2 ring-ring/50 ring-offset-1 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  /*
+    List-view column template shared by the header row and the app rows so the
+    columns actually line up: app | link | status | expires | updated | added.
+    Columns drop from the right as the viewport narrows; the app itself never
+    goes. Breakpoints are assembled.work's (md/lg/xl/2xl).
+  */
+  .app-list-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  @media (min-width: 48rem) {
+    .app-list-grid {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    }
+  }
+
+  @media (min-width: 64rem) {
+    .app-list-grid {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 9rem 7.5rem;
+    }
+  }
+
+  @media (min-width: 80rem) {
+    .app-list-grid {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 9rem 7.5rem 7rem;
+    }
+  }
+
+  @media (min-width: 96rem) {
+    .app-list-grid {
+      grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 9rem 7.5rem 7rem 7rem;
+    }
+  }
+
+  /*
+    A quiet horizontal scrollbar for link fields — lets the reader reach the
+    host at the tail of a long URL without the field growing the layout.
+  */
+  .scroll-x-thin {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+
+  .scroll-x-thin::-webkit-scrollbar {
+    height: 4px;
+  }
+
+  .scroll-x-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--border));
+    border-radius: 9999px;
   }
 }

@@ -11,15 +11,15 @@ const PAGE_SIZE = 50
 function eventClass(event: string): string {
   switch (event) {
     case 'allow':
-      return 'bg-emerald-50 text-emerald-800 ring-emerald-600/20'
+      return 'bg-emerald-50 dark:bg-emerald-400/10 text-emerald-800 dark:text-emerald-300 ring-emerald-600/20 dark:ring-emerald-400/30'
     case 'deny':
-      return 'bg-red-50 text-red-700 ring-red-600/20'
+      return 'bg-red-50 dark:bg-red-400/10 text-red-700 dark:text-red-300 ring-red-600/20 dark:ring-red-400/30'
     case 'wake':
-      return 'bg-amber-50 text-amber-800 ring-amber-600/25'
+      return 'bg-amber-50 dark:bg-amber-400/10 text-amber-800 dark:text-amber-300 ring-amber-600/25 dark:ring-amber-400/30'
     case 'sleep':
       return 'bg-slate-100 text-slate-600 ring-slate-500/15'
     case 'config_change':
-      return 'bg-accent-soft text-accent ring-accent/25'
+      return 'bg-azure/10 text-azure ring-azure/25'
     default:
       return 'bg-slate-100 text-slate-600 ring-slate-500/20'
   }
@@ -76,14 +76,14 @@ export function AuditLog({ host }: { host: string }) {
         title="Audit log"
         description="Newest first. Written by the proxy on every access decision, wake and config change."
         actions={
-          <span className="text-xs text-faint">
+          <span className="text-xs text-muted-foreground/70">
             {events.length} {events.length === 1 ? 'event' : 'events'} loaded
           </span>
         }
       >
         <div className="overflow-x-auto">
           <table className="w-full min-w-[40rem] border-collapse">
-            <thead className="border-b border-line-soft bg-canvas/60">
+            <thead className="border-b border-border/60 bg-background/60">
               <tr>
                 <th className={TH}>Event</th>
                 <th className={TH}>Who</th>
@@ -91,9 +91,9 @@ export function AuditLog({ host }: { host: string }) {
                 <th className={`${TH} text-right`}>When</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-line-soft">
+            <tbody className="divide-y divide-border/60">
               {events.map((event, index) => (
-                <tr key={`${event.ts}-${index}`} className="hover:bg-canvas/70">
+                <tr key={`${event.ts}-${index}`} className="hover:bg-background/70">
                   <td className="px-4 py-2.5">
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 font-mono text-xs font-medium ring-1 ring-inset ${eventClass(event.event)}`}
@@ -101,12 +101,12 @@ export function AuditLog({ host }: { host: string }) {
                       {event.event}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 text-sm text-muted">{event.email || '—'}</td>
-                  <td className="max-w-xs truncate px-4 py-2.5 font-mono text-xs text-faint">
+                  <td className="px-4 py-2.5 text-sm text-muted-foreground">{event.email || '—'}</td>
+                  <td className="max-w-xs truncate px-4 py-2.5 font-mono text-xs text-muted-foreground/70">
                     {event.path || '—'}
                   </td>
                   <td
-                    className="whitespace-nowrap px-4 py-2.5 text-right text-sm text-muted"
+                    className="whitespace-nowrap px-4 py-2.5 text-right text-sm text-muted-foreground"
                     title={formatDateTime(event.ts)}
                   >
                     {relativeTime(event.ts)}
@@ -126,11 +126,11 @@ export function AuditLog({ host }: { host: string }) {
             {loadingMore ? 'Loading…' : 'Load more'}
           </Button>
         ) : (
-          <span className="text-xs text-faint">End of the log.</span>
+          <span className="text-xs text-muted-foreground/70">End of the log.</span>
         )}
       </div>
     </div>
   )
 }
 
-const TH = 'px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-faint'
+const TH = 'px-4 py-2.5 text-left text-xs font-semibold uppercase tracking-wide text-muted-foreground/70'
