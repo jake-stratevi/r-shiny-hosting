@@ -1,6 +1,6 @@
 # ADR-0013: A lightweight Lambda portal at dashboards.tools.stratevi.com
 
-**Status:** Accepted, interim — live at dashboards.tools.stratevi.com; retired when the [ADR-0014](0014-standalone-control-plane.md) proxy ships
+**Status:** **Retired 2026-09-10.** It did its job: it was the menu for two months while the real control plane was built. The `portal/` stack (Lambda, target group, listener rule 50, its own Cognito client, DNS record) is destroyed, `catalog.yaml` is deleted, and `dashboards.tools.stratevi.com` now resolves through the wildcard to the [ADR-0014](0014-standalone-control-plane.md) proxy, which serves the React portal there. Everything below is history — the "Consequences" section's warning about two hand-synced lists is exactly the problem this retirement closes: entitlements now live once, in `shiny-proxy-apps`.
 **Date:** 2026-09-08
 
 ## Context

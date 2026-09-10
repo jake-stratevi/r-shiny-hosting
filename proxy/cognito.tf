@@ -24,12 +24,12 @@ resource "aws_cognito_user_pool_client" "this" {
 
   callback_urls = distinct(concat(
     [for host in var.app_hosts : "https://${host}/oauth2/idpresponse"],
-    ["https://${local.proxy_fqdn}/oauth2/idpresponse"],
+    [for host in local.portal_hosts : "https://${host}/oauth2/idpresponse"],
   ))
 
   logout_urls = distinct(concat(
     [for host in var.app_hosts : "https://${host}"],
-    ["https://${local.proxy_fqdn}"],
+    [for host in local.portal_hosts : "https://${host}"],
   ))
 
   explicit_auth_flows = [

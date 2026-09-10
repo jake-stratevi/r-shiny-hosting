@@ -39,6 +39,14 @@ locals {
   proxy_fqdn    = "${var.proxy_subdomain}.${data.aws_ssm_parameter.domain_name.value}"
   wildcard_fqdn = "*.${data.aws_ssm_parameter.domain_name.value}"
 
+  # The user-facing menu. A PORTAL host, not an app host: the proxy answers
+  # it with the portal UI (PORTAL_HOSTS in ecs.tf) rather than forwarding to
+  # an ECS task, and the shared Cognito client needs its callback URL just
+  # the same. Both facts derive from this one local so they cannot drift.
+  portal_menu_fqdn = "${var.portal_menu_subdomain}.${data.aws_ssm_parameter.domain_name.value}"
+
+  portal_hosts = [local.proxy_fqdn, local.portal_menu_fqdn]
+
   subnet_ids         = split(",", data.aws_ssm_parameter.subnet_ids.value)
   log_retention_days = tonumber(data.aws_ssm_parameter.log_retention_days.value)
 

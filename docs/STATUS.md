@@ -31,11 +31,19 @@ is half-done, and what has never been tested.
 
 **Auth: dedicated user pool (ADR-0015, supersedes ADR-0007). Live 2026-09-10.**
 The platform owns pool `us-east-1_LI3CZpwAF` (`shiny-platform`): invite-only,
-email sign-in, managed login v2, hosted UI `stratevi-shinyplatform`. The four
-staff were seeded as users (invite emails with 7-day temp passwords sent on
-apply). The proxy's shared client lives in this pool; the login-page branding
-association is applied (see GOTCHAS — every new client needs one). No Entra
-federation yet — native passwords; federation is one optional later step.
+email sign-in, managed login v2, hosted UI `stratevi-shinyplatform`. The
+proxy's shared client lives in this pool; the login-page branding
+association is applied (see GOTCHAS — every new client needs one).
+
+**Entra federation is live** (`Microsoft365`, added by hand in the console —
+unmanaged drift, its client secret exists only in the Cognito API and is
+overdue for rotation). Staff sign in with the Microsoft button and are
+auto-provisioned on first sign-in; external clients get native
+admin-created accounts. **Terraform declares no users** — the four seeded
+staff accounts were deleted once federation worked, because email is the
+pool's username and a native account collides with the same person's
+federated identity. See RUNBOOK.md "User administration", including the
+break-glass procedure (there is no standing native admin).
 **Sequencing trap:** the ADR-0013 Lambda portal stack and the un-migrated
 model stack were last applied against the old Hub pool and still work — do
 NOT re-apply either; retire/migrate them instead (see platform/ssm.tf's
@@ -86,6 +94,21 @@ dashboards.tools.stratevi.com until Jake blesses the new UI; switching that
 hostname (and retiring portal/ + catalog.yaml) is the next small step. P2
 (creation wizard + provisioning) and P2.5 (user management against the new
 pool) are specced in docs/design/portal.md.
+
+## Pending, half-done
+
+**The ADR-0013 Lambda portal retirement is staged but not applied.** The
+proxy's shared Cognito client already accepts the
+`dashboards.tools.stratevi.com` callback, and a reviewed destroy plan for
+the `portal/` stack (11 resources, incl. listener rule 50, the Lambda, and
+its old Hub-pool client) is saved at `portal/retire.tfplan`. Until it is
+applied, rule 50 still wins and that hostname still serves the OLD Lambda
+menu. Apply it with `terraform apply -input=false retire.tfplan` from
+`portal/`; the wildcard DNS record already covers the hostname, so removing
+the stack's own A-record causes no gap. **Afterwards:** delete the repo-root
+`catalog.yaml` (nothing reads it once that Lambda is gone — `seed.py` takes
+`--catalog` and fails loudly rather than silently), and confirm
+dashboards.tools.stratevi.com serves the React portal.
 
 ## Broken right now
 

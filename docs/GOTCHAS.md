@@ -124,3 +124,31 @@ hosted UI), and every client needs a branding-style association before its
 creating or recreating a client, run
 `aws cognito-idp create-managed-login-branding --user-pool-id <pool>
 --client-id <client> --use-cognito-provided-values`. See proxy/cognito.tf.
+
+**Entra returns AADSTS9002325 ("Proof Key for Code Exchange is required for
+cross-origin authorization code redemption").** The redirect URI is
+registered under Entra's **Single-page application** platform instead of
+**Web**. SPA-registered URIs force PKCE and browser-origin redemption;
+Cognito is a confidential client that redeems server-side with a secret and
+no `code_verifier`, so Entra refuses. Move the URI to the Web platform (the
+same URI cannot exist under both -- delete it from SPA first). The URI that
+matters is the POOL's hosted-UI callback,
+`https://<domain-prefix>.auth.<region>.amazoncognito.com/oauth2/idpresponse`,
+not the application's.
+
+**ALB returns 401 with `AuthMissingStateParam` in the access logs.** Nothing
+is misconfigured -- the sign-in was started from a Cognito hosted-UI URL (or
+a stale tab sitting on `/oauth2/idpresponse`) instead of from the
+application. The ALB plants a `state` value only when IT begins the flow and
+rejects any callback lacking it. Always enter at the app hostname. The
+`error_reason` field in the ALB access logs names this directly -- and
+distinguishes it from `ELBAuthUserClaimsSizeExceeded` (claims over 11 KB,
+which also 401s) and `ELBAuthError` (genuine misconfiguration or IdP
+unreachable).
+
+**A Cognito pool whose username attribute is `email` allows one account per
+address, native and federated combined.** Creating a native user for an
+address the IdP also emits fails with `AliasExistsException` -- and if that
+user is declared in Terraform, the failure lands halfway through an apply.
+Either federate a domain or hand-create accounts in it, never both. See
+ADR-0015.

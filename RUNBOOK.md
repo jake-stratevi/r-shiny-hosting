@@ -723,6 +723,54 @@ Checklist, in order — full rationale for each step is in
 Rollback is the same lever in reverse: set `proxied = false` in the app's
 `terraform.tfvars` and apply. That's a single flag, not a re-migration.
 
+## User administration
+
+Pool `us-east-1_LI3CZpwAF`, invite-only. Two populations (ADR-0015):
+
+**Staff** (`@stratevi.com`, `@assembledintelligence.co.uk`) need no account
+created — they sign in with the **Microsoft365** button and Cognito
+provisions them on first sign-in. **Never create a native Cognito user for
+an address Entra emits:** email is the pool's username, so it collides with
+their federated identity and Cognito refuses it (`AliasExistsException`).
+The same rule is why `platform/cognito.tf` declares no users; don't add any.
+
+Granting someone access is a separate step from them having an account —
+edit the app's allowlist in the portal admin UI (or the `allowed_emails` set
+on its `shiny-proxy-apps` row). The address must match what the IdP emits
+exactly; Entra returns `JAKE@STRATEVI.COM`-style capitals, which the proxy
+lowercases before matching, so store lowercase.
+
+**External clients** get a native account:
+
+```powershell
+aws cognito-idp admin-create-user `
+  --user-pool-id us-east-1_LI3CZpwAF `
+  --username client@example.com `
+  --user-attributes Name=email,Value=client@example.com Name=email_verified,Value=true `
+  --desired-delivery-mediums EMAIL
+```
+
+They receive an invite with a temporary password and sign in with the
+email/password form below the Microsoft button. Then add their address to
+the app's allowlist. To revoke: remove them from the allowlist (immediate,
+and the audit trail records it), and `admin-disable-user` if they should
+lose the account entirely.
+
+### Break-glass: federation is down and no staff can sign in
+
+There is deliberately no standing native admin account (ADR-0015). Recovery,
+from the AWS console or CLI with admin credentials:
+
+1. Create a native user at an address **Entra will never emit** — not a
+   mailbox in the tenant, or you recreate the collision above.
+2. Add that address to `admin_emails` on the `__config__` row of
+   `shiny-proxy-apps`. Fastest is editing the item in the DynamoDB console;
+   note that `proxy/portal.tf` owns that row, so a later `proxy/` apply will
+   revert it — which is the desired cleanup, not a problem.
+3. Sign in, do what's needed.
+4. Afterwards: `admin-delete-user`, and re-apply `proxy/` to restore the
+   admin list.
+
 ## Teardown
 
 Reverse order — the dashboard's listener rule attaches to the platform's

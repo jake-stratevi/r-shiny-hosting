@@ -55,17 +55,6 @@ locals {
   # the Cognito domain above.
   sign_in_host = "shinyplatform.${var.domain_name}"
 
-  # Invite-only, so the directory starts with exactly the people who must not
-  # be locked out by the switchover. Every user after these four is created by
-  # the portal (docs/design/portal.md, P2.5) or by admin-create-user; do NOT
-  # grow this list into the user database.
-  staff_emails = [
-    "jake@stratevi.com",
-    "nick@stratevi.com",
-    "yi@stratevi.com",
-    "josh@stratevi.com",
-  ]
-
   # Kept as a local so iam.tf and ssm.tf read one name. It is now simply the
   # pool this stack creates, not a string assembled from someone else's ID.
   cognito_user_pool_arn = aws_cognito_user_pool.this.arn
@@ -171,32 +160,30 @@ resource "aws_cognito_user_pool_domain" "this" {
 }
 
 # ---------------------------------------------------------------------------
-# Seed users.
+# NO USERS ARE DECLARED HERE, DELIBERATELY. Do not add any (ADR-0015).
 #
-# These four exist so the switchover off the Hub pool cannot lock anyone out:
-# they are created with the pool, and each gets an invite email carrying a
-# temporary password the moment this applies. FURTHER USERS ARE CREATED BY THE
-# PORTAL (docs/design/portal.md, P2.5) via the SDK, not here -- do not turn
-# this into the user table.
+# Two populations, neither of which Terraform should own:
 #
-# Terraform owns existence only. A password change, a disable, or an MFA
-# enrolment done outside Terraform is not reverted by an apply; deleting a
-# staff member from local.staff_emails DOES delete the account.
+#   Staff (@stratevi.com, @assembledintelligence.co.uk) sign in through the
+#   Microsoft365 federation. Cognito auto-provisions them as
+#   `microsoft365_<sub>` EXTERNAL_PROVIDER users on their FIRST sign-in --
+#   they do not exist in the pool before that, which the portal's user
+#   picker has to account for (docs/design/portal.md, P2.5).
+#
+#   External clients are created by an admin (or by the portal, P2.5) with
+#   admin-create-user; the pool is invite-only so nobody self-registers.
+#
+# This file DID seed the four staff as native users, so the switchover off
+# the Hub pool could not lock anyone out. That worked, federation then went
+# live, and the accounts were deleted on 2026-09-10 -- because the pool uses
+# email as the username, a native jake@stratevi.com and a federated identity
+# claiming the same address collide, and Cognito refuses the second one with
+# AliasExistsException. Re-adding an aws_cognito_user for any address Entra
+# emits reintroduces exactly that failure, at apply time, halfway through.
+#
+# Break-glass: there is intentionally no standing native admin. If federation
+# breaks, create a temporary user in the console at an address Entra will
+# never emit, add it to admin_emails in proxy/portal.tf's __config__ row (or
+# straight into DynamoDB for speed), and delete both afterwards. RUNBOOK.md
+# "User administration" has the steps.
 # ---------------------------------------------------------------------------
-
-resource "aws_cognito_user" "staff" {
-  for_each = toset(local.staff_emails)
-
-  user_pool_id = aws_cognito_user_pool.this.id
-  username     = each.value
-
-  attributes = {
-    email          = each.value
-    email_verified = "true"
-  }
-
-  # Sends the invite_message_template above with a generated temporary
-  # password. Omitting this (or using message_action = "SUPPRESS") creates the
-  # account silently and nobody can sign in.
-  desired_delivery_mediums = ["EMAIL"]
-}

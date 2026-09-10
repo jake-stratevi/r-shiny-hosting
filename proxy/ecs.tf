@@ -91,7 +91,7 @@ resource "aws_ecs_task_definition" "this" {
       { name = "AUDIT_TABLE", value = aws_dynamodb_table.audit.name },
       { name = "PORT", value = tostring(var.container_port) },
       { name = "LOG_LEVEL", value = var.log_level },
-      { name = "PORTAL_HOSTS", value = join(",", [local.proxy_fqdn, "${var.portal_menu_subdomain}.${data.aws_ssm_parameter.domain_name.value}"]) },
+      { name = "PORTAL_HOSTS", value = join(",", local.portal_hosts) },
     ]
 
     logConfiguration = {
