@@ -259,3 +259,16 @@ export const ReceiptIcon = svg(
     <path d="M9.5 8.5h5M9.5 12.5h5" />
   </>,
 )
+
+/**
+ * "Help" in the rail. A question mark in a circle rather than a life ring or
+ * a book: the page is a list of questions, and `InfoIcon` above is already
+ * spoken for by the notices, where it means "read this", not "ask this".
+ */
+export const HelpCircleIcon = svg(
+  <>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M9.6 9.3a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.3" />
+    <path d="M12 16.8h.01" />
+  </>,
+)

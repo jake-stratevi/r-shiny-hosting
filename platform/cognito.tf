@@ -164,8 +164,9 @@ resource "aws_cognito_user_pool_domain" "this" {
 #
 # Two populations, neither of which Terraform should own:
 #
-#   Staff (@stratevi.com, @assembledintelligence.co.uk) sign in through the
-#   Microsoft365 federation. Cognito auto-provisions them as
+#   Staff (@stratevi.com -- the @assembledintelligence.co.uk aliases were
+#   removed 2026-09-11, and proxy/portal.tf's staff_domains now names one
+#   domain) sign in through the Microsoft365 federation. Cognito auto-provisions them as
 #   `microsoft365_<sub>` EXTERNAL_PROVIDER users on their FIRST sign-in --
 #   they do not exist in the pool before that, which the portal's user
 #   picker has to account for (docs/design/portal.md, P2.5).

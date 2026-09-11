@@ -1,6 +1,6 @@
 # ADR-0002: Scale to zero via waker and sleeper Lambdas
 
-**Status:** Accepted
+**Status:** Accepted — but the MECHANISM changed. Scale-to-zero is still the whole cost model and is more true than ever; the waker and sleeper Lambdas that implemented it were retired on 2026-09-11 when the last legacy app was destroyed. The ADR-0014 proxy now wakes an app on the real request and sleeps it from server-side activity, which removed the holding page, the target-group swap, and the client heartbeat of ADR-0006.
 **Date:** 2026-09-01
 
 ## Context

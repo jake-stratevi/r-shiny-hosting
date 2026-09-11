@@ -15,6 +15,10 @@ export const fixtureMe: Me = {
   // P2a: independent of is_admin. `__portalMock.setCreator(false)` turns it
   // off to see the admin-who-cannot-create view.
   can_create: true,
+  // A stratevi.com address, so every staff-only screen is reachable.
+  // `__portalMock.setStaff(false)` gives the external-client view: one nav
+  // entry, and Help/Costs/Manage apps refused.
+  is_staff: true,
 }
 
 /** Flip to exercise the non-admin path: `is_admin: false`. */
@@ -22,6 +26,9 @@ export const fixtureNonAdminMe: Me = {
   email: 'client@example.com',
   is_admin: false,
   can_create: false,
+  // Not a Stratevi domain, so not staff — the two are decided separately,
+  // but for an external client both are false.
+  is_staff: false,
 }
 
 export const fixtureApps: App[] = [

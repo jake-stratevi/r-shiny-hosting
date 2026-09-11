@@ -418,38 +418,33 @@ Visit it. The sequence you should see:
    page with a progress bar.
 4. After 30–45 seconds, the page refreshes into your app.
 
-That holding page is the waker Lambda doing its job. Seeing it once is
-confirmation the whole mechanism works.
+That holding page is the **proxy** waking the task. Seeing it once is
+confirmation the whole mechanism works. (It used to be a waker Lambda; those
+were retired 2026-09-11 with the last legacy stack.)
 
 ## Step 2.9 — Verify the sleep cycle
 
 This is the step people skip, and it's the one that determines whether you
 actually get the cost savings. Set aside 45 minutes and don't touch the app.
 
-Open the CloudWatch dashboard named `shiny-dashboard-runtime`. Watch
-`HealthyHostCount`.
+The proxy decides this now, server-side — there is no heartbeat, no warm
+window and no CloudWatch alarm involved. What you want to see:
 
-**Note:** the default tfvars enable a weekday warm window of 12:00–01:00 UTC
-(roughly 07:00–20:00 US Eastern). Inside that window the app is *supposed* to
-stay up. To test sleeping, either do this outside the window, or temporarily
-set `warm_enabled = false` and re-apply.
+- The app's row in `shiny-proxy-apps` shows `state = running` while you use it
+- Roughly `idle_minutes` after you close the browser (20 for dashboards, 10
+  for models), the proxy sleeps it and the row goes to `stopped`
+- Revisiting the URL shows the starting page again, then the app
 
-What you want to see:
-
-- `HealthyHostCount` at 1 while you're using it
-- `RequestCountPerTarget` showing steady low traffic — that's your heartbeat
-- Roughly 20 minutes after you close the browser, `HealthyHostCount` drops to 0
-- Revisiting the URL shows the holding page again, then the app
-
-Check the sleeper's reasoning:
+Check the proxy's reasoning:
 
 ```bash
-aws logs tail /aws/lambda/shiny-dashboard-sleeper --since 1h
+aws logs tail /ecs/shiny/proxy --since 1h --filter-pattern sleep
 ```
 
-Each run logs one of: `warm`, `already-asleep`, `too-young`, `active`, or
-`slept`. If you see `active` when nobody is using it, something is polling the
-URL — an uptime monitor, a browser tab left open, a bookmark preview.
+Every wake, allow, deny and sleep is also a row in `shiny-proxy-audit`, and
+the portal's Costs page turns the awake intervals into money. If the app never
+sleeps, something is holding a websocket or polling the URL — an uptime
+monitor, a browser tab left open, a bookmark preview.
 
 ## Step 2.10 — Invite real users
 
@@ -487,34 +482,37 @@ change infrastructure — sizing, schedule, domains.
 
 ## Adjusting the sleep schedule
 
-Edit `dashboard/terraform.tfvars`, then `terraform apply`. Relevant knobs:
-`warm_enabled`, `warm_days`, `warm_start_utc`, `warm_end_utc`, `idle_minutes`.
-
-Remember the warm window is in **UTC**, and the US offset shifts by an hour
-twice a year. If exact business-hours alignment matters, adjust it in March and
-November, or just widen the window by an hour and stop thinking about it.
+Not Terraform any more. Edit the app's settings in the portal's admin area
+(`idle_minutes`, `max_session_hours`) — the change is audited and takes effect
+on the next request. Warm windows no longer exist: the first visitor of the
+morning sees the ~30–60s starting page, which is the trade that removed
+~$7.60/month of pre-warming.
 
 ## Checking what it actually cost
 
 After the first full month:
 
-**Billing → Cost Explorer → group by Tag: Project = shiny**
+Use the portal's **Costs** page first — it meters awake seconds per app
+against that app's task size, so it attributes cost the way you'd actually
+ask the question. Cost Explorer (group by Tag: Project = shiny) is the
+cross-check on the total, not the per-app source: its tags aren't
+retroactive, lag a day, and can't split shared cost.
 
-Sanity check: ALB around $16–20, Fargate a few dollars, everything else near
-zero. If Fargate is much higher than expected, the app isn't sleeping — go back
-to Step 2.9.
+Sanity check: ALB around $16–20, the proxy task ~$9, per-app Fargate a few
+dollars, everything else near zero. If an app's awake hours are much higher
+than expected, it isn't sleeping — go back to Step 2.9.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `apply` hangs on certificate validation | Delegation not live | `dig NS tools.stratevi.com` — if empty, Phase 1 is incomplete |
-| ALB returns 503 | Waker Lambda not registered to its target group | Check `aws_lb_target_group_attachment.waker` applied; re-run `terraform apply` |
+| ALB returns 503 | Proxy task unhealthy — it fronts every app | `aws ecs describe-services --cluster shiny-cluster --services shiny-proxy`; check `/ecs/shiny/proxy` logs |
 | Task starts then dies repeatedly | Health check failing | `aws logs tail /ecs/shiny/dashboard --since 15m` |
 | `exec format error` in task logs | arm64 image on an x86 task | Rebuild with `--platform linux/amd64` |
 | Cognito redirect loop | Callback URL mismatch | Confirm the app client's callback is `https://<fqdn>/oauth2/idpresponse` |
-| App never sleeps | Heartbeat firing with no users, or warm window active | Check sleeper logs; confirm the warm window is what you think in UTC |
-| Session dies after ~20 min of use | Heartbeat missing from the deployed image | Verify in devtools; rebuild and push |
+| App never sleeps | Something is holding a websocket or polling the URL | Check `/ecs/shiny/proxy` logs and `shiny-proxy-audit` for who is requesting it |
+| Session dies after ~20 min of use | Was a missing heartbeat on the legacy path; can't happen now — the proxy counts open websockets | If you see it, the proxy's websocket accounting is wrong: capture the audit rows |
 | `parameter not found` on dashboard apply | `project` differs between stacks | Make them match, re-apply |
 | Cognito domain apply fails | Prefix already taken globally | Add a suffix and re-apply |
 
@@ -621,13 +619,9 @@ Select-String -Path plan.txt -Pattern "^Plan:"
 
 `Plan: 0 to add, 0 to change, 0 to destroy` is what you want — including on
 `platform`, where the `ignore_changes` lifecycle blocks on the listener rule
-and the ECS service should mean the plan stays clean even though the
-waker/sleeper Lambdas mutate both of those at runtime. Anything else: stop
-and investigate before moving to the next stack. Do not apply it.
-
-**dashboard and model are byte-identical Terraform.** If something goes
-wrong on one, check whether the same edit already landed in the other before
-assuming it's stack-specific.
+and the ECS service should mean the plan stays clean even though something
+mutates both of those at runtime. Anything else: stop and investigate before
+moving to the next stack. Do not apply it.
 
 ### If the migration is interrupted
 
@@ -674,6 +668,23 @@ service. See [docs/design/proxy.md](docs/design/proxy.md) for how it decides
 what to do with a request — this section is just the day-to-day commands.
 
 ### Build and push the proxy image
+
+**Build the UI first.** The React bundle is baked into this image at build
+time (`proxy-app/Dockerfile` COPYs `./portal-dist/`), and Node never enters
+the runtime image. Skipping these two lines is NOT an error -- the directory
+is committed with a `.gitkeep`, so the COPY succeeds and you get an image
+carrying whatever was in `portal-dist/` last time, or a "not built yet" page
+if it was never populated. Either way the API works and the UI is a version
+behind, with nothing in any log to say so.
+
+```powershell
+cd portal-ui
+npm ci; npm run build
+Remove-Item -Recurse -Force ..\proxy-app\portal-dist\* -ErrorAction SilentlyContinue
+Copy-Item -Recurse dist\* ..\proxy-app\portal-dist\
+```
+
+Then the image:
 
 ```powershell
 cd proxy-app
@@ -748,7 +759,9 @@ Rollback is the same lever in reverse: set `proxied = false` in the app's
 
 Pool `us-east-1_LI3CZpwAF`, invite-only. Two populations (ADR-0015):
 
-**Staff** (`@stratevi.com`, `@assembledintelligence.co.uk`) need no account
+**Staff** (`@stratevi.com` only since 2026-09-11 -- the
+`@assembledintelligence.co.uk` aliases are gone from the pool, and
+`staff_domains` in `__config__` names one domain) need no account
 created — they sign in with the **Microsoft365** button and Cognito
 provisions them on first sign-in. **Never create a native Cognito user for
 an address Entra emits:** email is the pool's username, so it collides with
@@ -811,12 +824,13 @@ you're done for good.
 
 # What comes after
 
-Once the dashboard has run for a week or two without drama, you'll have proven
-the ALB, Cognito, the waker/sleeper cycle, and the deployment loop. The
-microsimulation model is the same motion with three differences: a much larger
-image, a 4 vCPU task, and the three R code changes it actually needs
-(`SHINY_CPU_WORKERS`, `DEBUG_RUNMODEL`, and a cap on `n`).
+This all happened. The ALB, Cognito, the wake/sleep cycle and the deployment
+loop are proven, and the microsimulation model went through the **portal**
+rather than a second Terraform stack — uploaded as a zip, built by CodeBuild,
+provisioned by the SDK. That is the motion for every app from here: nobody
+should be writing a Terraform stack per app again. See
+docs/design/portal-p2a.md.
 
-That one needs the full app directory — `ui.R`, `global.R`,
-`Rcode_Packages.R`, `Rcode_HelperFunctions.R`, `Images/`, `www/` — plus the
-`renv.lock`.
+What an R app still owes the pipeline: read `SHINY_CPU_WORKERS` rather than
+calling `detectCores()`, ship a `renv.lock` that actually covers every
+`library()` call, and cap anything user-supplied that drives run time.

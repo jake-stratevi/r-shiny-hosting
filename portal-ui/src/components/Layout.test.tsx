@@ -88,16 +88,33 @@ describe('the sidebar nav, per permission', () => {
 })
 
 describe('the shell itself', () => {
-  it('opens on the icon rail when this browser has no preference', () => {
+  // Jake, 2026-09-11: the rail opens FULLY EXPANDED for a browser with no
+  // stored preference. It used to open on the icon rail; the labels are
+  // worth more than the 13rem on first acquaintance.
+  it('opens on the full rail when this browser has no preference', () => {
     renderPage(shell, { me: adminMe })
 
-    // The only control offered is the one that opens it — i.e. it is closed.
-    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+    // The only control offered is the one that closes it — i.e. it is open.
+    expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
     expect(localStorage.getItem('sidebar_state')).toBeNull()
   })
 
-  it('expands the rail and remembers it', async () => {
+  it('collapses the rail and remembers it', async () => {
     const user = userEvent.setup()
+    const view = renderPage(shell, { me: adminMe })
+
+    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(localStorage.getItem('sidebar_state')).toBe('collapsed')
+
+    view.unmount()
+    renderPage(shell, { me: adminMe })
+    // The stored choice beats the expanded default.
+    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
+  })
+
+  it('expands the rail again and remembers that too', async () => {
+    const user = userEvent.setup()
+    localStorage.setItem('sidebar_state', 'collapsed')
     const view = renderPage(shell, { me: adminMe })
 
     await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
@@ -105,24 +122,14 @@ describe('the shell itself', () => {
 
     view.unmount()
     renderPage(shell, { me: adminMe })
-    // The stored choice beats the collapsed default, in both directions.
+    // The stored choice wins in BOTH directions, not just away from default.
     expect(screen.getByRole('button', { name: 'Collapse sidebar' })).toBeInTheDocument()
   })
 
-  it('collapses the rail again and remembers that too', async () => {
-    const user = userEvent.setup()
-    const view = renderPage(shell, { me: adminMe })
-
-    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
-    await user.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
-    expect(localStorage.getItem('sidebar_state')).toBe('collapsed')
-
-    view.unmount()
-    renderPage(shell, { me: adminMe })
-    expect(screen.getByRole('button', { name: 'Expand sidebar' })).toBeInTheDocument()
-  })
-
   it('keeps every nav row reachable by name while the rail is icons only', () => {
+    // Explicit now that expanded is the default: without this the test still
+    // passed and had quietly stopped exercising the collapsed rail at all.
+    localStorage.setItem('sidebar_state', 'collapsed')
     renderPage(shell, { me: adminMe })
 
     // The label goes visually, not from the accessibility tree.
@@ -133,6 +140,7 @@ describe('the shell itself', () => {
   })
 
   it('keeps the theme toggle and the account block operable on the icon rail', () => {
+    localStorage.setItem('sidebar_state', 'collapsed')
     renderPage(shell, { me: adminMe })
 
     const theme = within(screen.getByRole('group', { name: 'Color theme' }))
@@ -148,6 +156,7 @@ describe('the shell itself', () => {
   })
 
   it('still marks the active row when it is an icon', () => {
+    localStorage.setItem('sidebar_state', 'collapsed')
     renderPage(shell, { me: adminMe, route: '/admin' })
 
     expect(nav().getByRole('link', { name: 'Manage apps' })).toHaveAttribute(
@@ -177,5 +186,13 @@ describe('the shell itself', () => {
   it('renders the page it is given', () => {
     renderPage(shell, { me: clientMe })
     expect(screen.getByText('page body')).toBeInTheDocument()
+  })
+
+  it('puts the Tour control at the far right of the header, beside the trail', () => {
+    renderPage(shell, { me: clientMe })
+
+    const header = screen.getByRole('button', { name: 'Tour' }).closest('header')
+    expect(header).not.toBeNull()
+    expect(within(header as HTMLElement).getByRole('navigation', { name: 'Breadcrumb' })).toBeInTheDocument()
   })
 })

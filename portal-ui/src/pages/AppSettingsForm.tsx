@@ -268,11 +268,27 @@ export function AppSettingsForm({
         description="When access ends, and whether the app answers at all."
         bodyClassName="divide-y divide-border/60"
       >
+        {/* NOTE on the expired-app message below. Do NOT restore the old
+            "give it a future date to bring it back" wording, and do not tell
+            the admin to set Status to Active either. Neither works today:
+
+              - `access.decide` refuses on `status == "expired"` OR a lapsed
+                date, so a future date alone is not enough, and
+              - `toDraft` maps any non-`disabled` status to `active`, so an
+                expired app's Status control ALREADY reads Active,
+                `buildPatch` sees no change, and `status` never goes on the
+                wire. PATCH would accept `active` -- the form never sends it.
+
+            So an expired app cannot currently be revived from this screen at
+            all. Until that is fixed (ROADMAP Step 4b), say so rather than
+            describing a recovery that silently does nothing. */}
         <Field label="Expiry" hint="A date, or a deliberate never. No silent default.">
           <ExpiryPicker value={draft.expires_at} onChange={(next) => set('expires_at', next)} />
           {app.status === 'expired' ? (
             <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
-              This app has already expired. Give it a future date to bring it back.
+              This app has expired and <strong>cannot be brought back from this
+              screen yet</strong> — changing the date here will not revive it.
+              Reviving it currently needs a direct write to the app&rsquo;s row.
             </p>
           ) : null}
         </Field>

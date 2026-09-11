@@ -2,7 +2,13 @@ import type { ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useMe } from '../lib/meContext'
 import { AppearanceToggle } from './AppearanceToggle'
-import { CirclePlusIcon, GridIcon, ReceiptIcon, ShieldIcon } from './icons'
+import {
+  CirclePlusIcon,
+  GridIcon,
+  HelpCircleIcon,
+  ReceiptIcon,
+  ShieldIcon,
+} from './icons'
 import { Logo, LogoMark } from './Logo'
 import { NavUser } from './NavUser'
 import {
@@ -32,21 +38,28 @@ interface NavItem {
  * and account block pinned to the footer.
  *
  * The nav is only what this product has. Theirs lists Dashboard, My Apps,
- * Shared With Me, Create App and Help; we have one menu, one admin list and
- * one wizard, so that is what the rail says. A link to a screen we have not
- * built is worse than a short menu.
+ * Shared With Me, Create App and Help; we have one menu, one admin list, one
+ * wizard, a costs report and a help page, so that is what the rail says. A
+ * link to a screen we have not built is worse than a short menu.
+ *
+ * Everything except the menu is staff-only, and the gates are independent and
+ * all fail closed: `is_staff` is the outer one (an external client sees
+ * exactly one row, Apps), and `is_admin` / `can_create` decide the rest
+ * underneath it. This mirrors App.tsx's route guards on purpose — the rail
+ * must not offer a row whose route would refuse it.
  */
 export function AppSidebar() {
   const me = useMe()
   const { collapsed, isMobile } = useSidebar()
   const iconOnly = collapsed && !isMobile
+  const staff = me?.is_staff === true
 
   const appItems: NavItem[] = [
     { title: 'Apps', to: '/', end: true, icon: <GridIcon className="h-4 w-4" /> },
   ]
   // Creation is its own permission — admin does not imply it, and it does
   // not imply admin. Both gates are independent, and both fail closed.
-  if (me?.can_create) {
+  if (staff && me?.can_create) {
     appItems.push({
       title: 'New app',
       to: '/admin/apps/new',
@@ -54,16 +67,28 @@ export function AppSidebar() {
     })
   }
 
-  const adminItems: NavItem[] = me?.is_admin
-    ? [
-        { title: 'Manage apps', to: '/admin', end: true, icon: <ShieldIcon className="h-4 w-4" /> },
-        {
-          title: 'Costs',
-          to: '/admin/costs',
-          end: true,
-          icon: <ReceiptIcon className="h-4 w-4" />,
-        },
-      ]
+  const adminItems: NavItem[] =
+    staff && me?.is_admin
+      ? [
+          {
+            title: 'Manage apps',
+            to: '/admin',
+            end: true,
+            icon: <ShieldIcon className="h-4 w-4" />,
+          },
+          {
+            title: 'Costs',
+            to: '/admin/costs',
+            end: true,
+            icon: <ReceiptIcon className="h-4 w-4" />,
+          },
+        ]
+      : []
+
+  // Its own group rather than the tail of "Apps": the page is about running
+  // apps on this platform, not one of them.
+  const supportItems: NavItem[] = staff
+    ? [{ title: 'Help', to: '/help', end: true, icon: <HelpCircleIcon className="h-4 w-4" /> }]
     : []
 
   return (
@@ -83,6 +108,9 @@ export function AppSidebar() {
           <NavGroup label="Apps" items={appItems} />
           {adminItems.length > 0 ? (
             <NavGroup label="Administration" items={adminItems} />
+          ) : null}
+          {supportItems.length > 0 ? (
+            <NavGroup label="Support" items={supportItems} />
           ) : null}
         </nav>
       </SidebarContent>

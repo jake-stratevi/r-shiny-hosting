@@ -16,6 +16,13 @@ Three things here are load-bearing:
   cached for ~30s so an admin page refresh is not a DynamoDB read per tile,
   and a *failure* is cached far more briefly than a success so a blip does
   not lock the control plane for half a minute.
+* **Every control-plane permission is ANDed with a staff domain.** Admin and
+  create both require the caller's email domain to be in
+  ``__config__.staff_domains`` (defaulting to
+  :data:`registry.DEFAULT_STAFF_DOMAINS`) as well as being named in the
+  relevant list, so an outside address cannot be granted either by editing a
+  list. ``/menu`` is untouched by this -- entitlement to *use* an app is the
+  app row's business and clients are entitled to their own dashboards.
 * **``__``-prefixed rows are configuration, not apps.** They are skipped
   here, in `registry`, and in `sleeper`. The menu offering a tile called
   "__config__" would be funny once.
@@ -139,6 +146,10 @@ class AdminSource(Protocol):
 
 class CreatorSource(Protocol):
     async def can_create(self, email: str) -> bool: ...
+
+
+class StaffSource(Protocol):
+    async def is_staff(self, email: str) -> bool: ...
 
 
 class UsageSource(Protocol):
@@ -267,6 +278,41 @@ class CreatorList(ConfigList):
 
     async def can_create(self, email: str) -> bool:
         return await self.has(email)
+
+
+class StaffDomains(ConfigList):
+    """``__config__.staff_domains``: which addresses may hold a permission.
+
+    The other two lists answer "is this person named?"; this one answers "is
+    this person one of us?", and it is ANDed with both. A control-plane
+    permission is therefore two independent facts -- a staff domain AND a
+    reviewed list entry -- so an address that is not staff cannot be granted
+    admin or create by editing a list, whether that edit is a mistake, a
+    stale entry nobody pruned, or deliberate.
+
+    Unlike its siblings this one does NOT resolve an unreadable row to "no".
+    See :data:`registry.DEFAULT_STAFF_DOMAINS` for why: refusing every
+    administrator at once during a DynamoDB blip is a worse outcome than
+    keeping the one domain staff actually sign in from, and the fallback can
+    never admit an address the row would have excluded.
+    """
+
+    attribute = registry.CONFIG_STAFF_DOMAINS
+
+    async def domains(self) -> frozenset[str]:
+        """The configured domains, or the documented default.
+
+        "Missing", "empty" and "unreadable" are deliberately one case here:
+        all three mean the row did not tell us who staff are, and the answer
+        to that is :data:`registry.DEFAULT_STAFF_DOMAINS` rather than nothing.
+        """
+        configured = await self.emails()
+        if configured and self.ok:
+            return configured
+        return frozenset(registry.DEFAULT_STAFF_DOMAINS)
+
+    async def is_staff(self, email: str) -> bool:
+        return registry.is_staff_email(email, await self.domains())
 
 
 class DenyList(ConfigList):
@@ -510,6 +556,7 @@ class Portal:
         recorder: RecorderLike,
         audit: AuditSource | None = None,
         creators: CreatorSource | None = None,
+        staff: StaffSource | None = None,
         creation: CreationLike | None = None,
         usage: UsageSource | None = None,
         dist: str | Path | None = None,
@@ -528,6 +575,12 @@ class Portal:
         # anything to create with, and the two failure messages are
         # different: 403 versus 503.
         self._creators = creators
+        # Absent means the documented default applies, NOT that nobody is
+        # staff: a Portal built without this collaborator (a test, or a
+        # deployment whose wiring predates the gate) still enforces the
+        # boundary against `registry.DEFAULT_STAFF_DOMAINS`. There is no
+        # configuration in which the staff check is simply skipped.
+        self._staff = staff
         self._creation = creation
         # Absent on a deployment whose proxy predates the ledger, or in a
         # test that does not care: /costs answers 503 and nothing else
@@ -585,16 +638,31 @@ class Portal:
         return _error(404, "no such endpoint")
 
     async def _me(self, request: web.Request, principal: Principal) -> web.Response:
+        """Who the caller is, and what the server will actually let them do.
+
+        ``is_admin`` and ``can_create`` are the EFFECTIVE answers -- the
+        reviewed list AND the staff domain, exactly what `_require_admin` and
+        `_require_creator` will decide -- so the UI never renders an
+        affordance the next request 403s. A non-staff address listed in
+        `admin_emails` therefore reads ``is_admin: false`` here, which is the
+        truth about what it can do.
+
+        ``is_staff`` is reported on its own because it answers a different
+        question: not "may I edit apps" but "am I inside the organisation",
+        which is what a staff-only screen keys off.
+        """
         if request.method not in ("GET", "HEAD"):
             return _error(405, "method not allowed")
+        staff = await self._is_staff(principal)
         return _json(
             200,
             {
                 "email": principal.email,
-                "is_admin": await self._admins.is_admin(principal.email),
+                "is_admin": staff and await self._admins.is_admin(principal.email),
                 # Independent of is_admin, both ways: a creator need not be
                 # an admin, and an admin is not a creator by default.
-                "can_create": await self._may_create(principal),
+                "can_create": staff and await self._may_create(principal),
+                "is_staff": staff,
             },
         )
 
@@ -1170,6 +1238,28 @@ class Portal:
             )
             return False
 
+    async def _is_staff(self, principal: Principal) -> bool:
+        """Is this caller inside the organisation?
+
+        The domain half of every control-plane permission. Never raises: the
+        `StaffDomains` list already resolves its own failures to the
+        documented default, and a Portal wired without the collaborator at
+        all evaluates the same default here rather than skipping the check.
+        """
+        if self._staff is None:
+            return registry.is_staff_email(
+                principal.email, registry.DEFAULT_STAFF_DOMAINS
+            )
+        try:
+            return await self._staff.is_staff(principal.email)
+        except Exception as exc:  # pragma: no cover - the list handles its own
+            self._log.warning(
+                "cannot resolve staff domains", extra={"reason": str(exc)}
+            )
+            return registry.is_staff_email(
+                principal.email, registry.DEFAULT_STAFF_DOMAINS
+            )
+
     async def _require_creator(self, principal: Principal) -> web.Response | None:
         """``None`` when the caller may create, otherwise the refusal.
 
@@ -1177,8 +1267,13 @@ class Portal:
         not" and 503 means "nobody can yet, the pipeline is not deployed".
         Collapsing them would have a creator reading a permissions error
         during the window before the P2a Terraform is applied.
+
+        A non-staff caller is the FIRST of those, not the second -- "you
+        personally may not" -- so the staff check is ANDed into the 403 half
+        and is asked before the pipeline exists at all. Being named in
+        `creator_emails` is not sufficient on its own.
         """
-        if not await self._may_create(principal):
+        if not await self._is_staff(principal) or not await self._may_create(principal):
             self._log.info(
                 "portal create refused",
                 extra={"email": principal.email, "sub": principal.sub},
@@ -1189,8 +1284,21 @@ class Portal:
         return None
 
     async def _require_admin(self, principal: Principal) -> web.Response | None:
-        """``None`` when the caller may proceed, otherwise the 403 to send."""
-        if await self._admins.is_admin(principal.email):
+        """``None`` when the caller may proceed, otherwise the 403 to send.
+
+        Two facts, both required: a staff domain AND membership of
+        `admin_emails`. A non-staff address is refused even when it is on the
+        list, so the guarantee "only staff hold the control plane" is a
+        property of this function rather than a consequence of somebody
+        keeping a Terraform list tidy.
+
+        One message for both failures. Which half refused is in the log, not
+        in the response: an outsider probing the portal learns only that they
+        are not an administrator.
+        """
+        if await self._is_staff(principal) and await self._admins.is_admin(
+            principal.email
+        ):
             return None
         self._log.info(
             "portal admin refused",
@@ -1375,6 +1483,7 @@ __all__ = [
     "LIVE_BUILD_FAILED",
     "PatchError",
     "Portal",
+    "StaffDomains",
     "app_json",
     "live_state",
     "menu_json",

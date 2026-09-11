@@ -222,6 +222,7 @@ class FakeStore:
         self.awake_since_writes: list[tuple[str, int]] = []
         self.patches: list[tuple[str, dict]] = []
         self.admins: tuple[str, ...] = ()
+        self.staff: tuple[str, ...] = ()
 
     async def app(self, host: str) -> App | None:
         self.reads += 1
@@ -246,6 +247,9 @@ class FakeStore:
 
     async def admin_emails(self) -> tuple[str, ...]:
         return self.admins
+
+    async def staff_domains(self) -> tuple[str, ...]:
+        return self.staff
 
     async def ping(self) -> None:
         pass
@@ -382,6 +386,15 @@ async def test_admin_emails_pass_through_uncached(cached):
     store, clock, cache = cached
     store.admins = ("jake@stratevi.com",)
     assert await cache.admin_emails() == ("jake@stratevi.com",)
+
+
+@pytest.mark.asyncio
+async def test_staff_domains_pass_through_uncached(cached):
+    """`portal.StaffDomains` owns that cache, for the same reason AdminList
+    does: it has to decide what an unreadable answer means."""
+    store, clock, cache = cached
+    store.staff = ("stratevi.com",)
+    assert await cache.staff_domains() == ("stratevi.com",)
 
 
 # --- the patch encoding ----------------------------------------------------
@@ -643,6 +656,80 @@ async def test_a_config_row_with_no_creator_emails_returns_nothing_not_an_error(
     store = registry.DynamoAppStore(client, "t")
     assert await store.creator_emails() == ()
     assert await store.key_denylist() == ()
+    # RAW, not the default: the reader reports what the row says and
+    # `portal.StaffDomains` decides what "it said nothing" means. Collapsing
+    # the two here would leave nothing able to tell them apart.
+    assert await store.staff_domains() == ()
+
+
+@pytest.mark.asyncio
+async def test_staff_domains_comes_off_the_same_config_row_normalized():
+    client = FakeDynamoClient(
+        {
+            registry.CONFIG_HOST: {
+                "host": {"S": registry.CONFIG_HOST},
+                # The three ways a human writes a domain into a Terraform
+                # list, all of which have to match an address.
+                "staff_domains": {"SS": [" Stratevi.com ", "@other.example", "x.test."]},
+            }
+        }
+    )
+    store = registry.DynamoAppStore(client, "t")
+    assert await store.staff_domains() == ("stratevi.com", "other.example", "x.test")
+
+
+@pytest.mark.parametrize(
+    "email,expected",
+    [
+        ("jake@stratevi.com", "stratevi.com"),
+        ("  JAKE@Stratevi.COM  ", "stratevi.com"),
+        ("jake@stratevi.com.", "stratevi.com"),
+        # No domain this module will vouch for -- every caller refuses these.
+        ("", ""),
+        ("jake", ""),
+        ("@stratevi.com", ""),
+        ("a@b@stratevi.com", ""),
+    ],
+)
+def test_the_domain_of_an_address(email, expected):
+    assert registry.email_domain(email) == expected
+
+
+def test_a_staff_domain_is_matched_exactly_and_never_as_a_suffix():
+    """The lookalikes. Both are registrable by anybody.
+
+    `notstratevi.com` ends with the staff domain, `stratevi.com.evil.test`
+    begins with it, and a subdomain is simply a different domain. An
+    endswith or substring test admits at least one of them.
+    """
+    domains = ("stratevi.com",)
+    assert registry.is_staff_email("jake@stratevi.com", domains) is True
+    assert registry.is_staff_email("JAKE@STRATEVI.COM", domains) is True
+    for address in (
+        "x@notstratevi.com",
+        "x@stratevi.com.evil.test",
+        "x@mail.stratevi.com",
+        "x@stratevi.co",
+        "stratevi.com@evil.test",
+    ):
+        assert registry.is_staff_email(address, domains) is False, address
+
+
+def test_an_empty_domain_list_matches_nobody_rather_than_everybody():
+    """The failure mode the default exists to prevent.
+
+    `is_staff_email` itself is not where the fallback lives -- given no
+    domains it admits no one, so a caller that forgets
+    DEFAULT_STAFF_DOMAINS fails closed rather than open.
+    """
+    assert registry.is_staff_email("jake@stratevi.com", ()) is False
+    assert registry.DEFAULT_STAFF_DOMAINS == ("stratevi.com",)
+
+
+def test_a_wildcard_staff_domain_matches_nothing():
+    """Unsupported syntax has to fail, not approximate."""
+    assert registry.is_staff_email("x@mail.stratevi.com", ("*.stratevi.com",)) is False
+    assert registry.is_staff_email("x@stratevi.com", ("*.stratevi.com",)) is False
 
 
 @pytest.mark.parametrize(

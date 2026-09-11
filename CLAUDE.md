@@ -32,8 +32,8 @@ proxy-app/       Container source for the proxy AND the portal API.
 portal-ui/       React SPA. Built, then copied into proxy-app/portal-dist
                  at image-build time -- no Node in the runtime image.
 dashboard/       Tarpeyo Sankey app stack. Deployed, `proxied = true`.
-model/           Microsimulation app stack. Deployed but hard off
-                 (`waker_enabled = false`) and its ECR repo is empty.
+                 The LAST Terraform-managed app -- everything since is
+                 created through the portal, which writes no Terraform.
 dashboard-app/   Container source for the dashboard.
 state-backend/   Bootstraps the S3 state bucket. Local state, by necessity.
 iam/             Deployment policy + preflight scripts.
@@ -41,8 +41,9 @@ docs/            ADRs, design specs, status, runbooks, gotchas.
 teardown.ps1     Teardown automation.
 ```
 
-`dashboard/` and `model/` are byte-identical Terraform with different tfvars.
-**A fix in one must be applied to the other.** This has been missed four times.
+The old "`dashboard/` and `model/` are byte-identical, fix both" rule is
+retired: `model/` was destroyed on 2026-09-11 (that app now lives in the
+portal as `microsimulation-model`), so there is no twin left to keep in sync.
 
 ## Rules
 
@@ -81,13 +82,15 @@ them, so they deliberately have NO ignore blocks. See the comments there.
 listener. A **proxied app has no listener rule at all** — the catch-all
 serves it — so this register only matters for apps still on the legacy path.
 
-Register: 50 free (was the retired ADR-0013 Lambda portal), 100 free (was
-dashboard, now proxied), model 200 + its ECS association rule at 900,
-**4900 the signed-out page** (the listener's ONLY rule with no
-authenticate action — read the banner in `proxy/alb.tf` before touching
-it), **proxy 5000** (the `*.tools.stratevi.com` catch-all — must stay the
-highest number so any explicit app rule still wins; see
-docs/design/proxy.md). Legacy app stacks put their ECS association rule at
+**There are currently NO per-app rules at all.** Every app is proxied, so
+the listener holds exactly two: **4900 the signed-out page** (the only rule
+with no authenticate action — read the banner in `proxy/alb.tf` before
+touching it) and **proxy 5000**, the `*.tools.stratevi.com` catch-all, which
+must stay the highest number so any explicit rule added later still wins.
+
+Free: 50 (the retired ADR-0013 Lambda portal), 100 (dashboard, now proxied),
+200 and 900 (model, destroyed 2026-09-11). A legacy app stack, if one is ever
+resurrected with `proxied = false`, puts its ECS association rule at
 priority + 700.
 
 **Terraform escaping:** `$${` produces a literal `${`, not a literal `$`. Use
@@ -110,12 +113,13 @@ costs about the same. Size up rather than down for the model.
 
 ## Things that will break if you forget them
 
-**Legacy (`proxied = false`) apps only:** the app's UI must contain the
-heartbeat snippet. Their idle detection reads `RequestCountPerTarget`, and a
-Shiny websocket generates zero HTTP requests — so without it the sleeper
-scales a task to zero underneath an active user. **Proxied apps need no
-heartbeat** — the proxy counts real requests and open websockets server-side
-(ADR-0006 is retired for them). Only `model/` is still on the legacy path.
+**The heartbeat snippet is dead — do not add it to a new app.** It existed
+because the legacy sleeper read `RequestCountPerTarget` and a Shiny websocket
+generates zero HTTP requests. The proxy counts real requests and open
+websockets server-side, so ADR-0006 is retired outright: as of 2026-09-11
+there are no `proxied = false` apps and no waker/sleeper Lambdas anywhere.
+`dashboard-app/`'s image still carries the snippet harmlessly; it goes at the
+next rebuild.
 
 **A new Cognito app client renders "Login pages unavailable"** until it gets
 a managed-login branding association, which Terraform cannot create. Run

@@ -54,8 +54,11 @@ the consumer check for it.
 derived from it inherits that, so root outputs referencing it need explicit
 `sensitive = true`. Read them back with `terraform output -raw <name>`.
 
-**ECS won't create a service against an unassociated target group.** Our real
-listener rule points at the waker target group, so the ECS target group has no
+**ECS won't create a service against an unassociated target group.**
+*(Historical — no stack does this since the legacy path was retired
+2026-09-11. Kept because the rule itself still bites anyone who puts a
+non-ECS action on the listener rule in front of a service.)* The legacy
+listener rule pointed at the waker target group, so the ECS target group has no
 load balancer attached and `CreateService` fails with "does not have an
 associated load balancer". Fixed with `aws_lb_listener_rule.ecs_association` — a
 rule on a host condition that can never match (`*.invalid`), existing purely to
@@ -63,7 +66,7 @@ satisfy the association requirement.
 
 **A failed resource strands its dependents.** When `CreateService` failed, both
 Lambdas, both permissions, the waker attachment and the event target were never
-created either — because they all reference the service name. The retry plan was
+created either (that was the legacy stack; the lesson outlives it) — because they all reference the service name. The retry plan was
 8 resources, not 1.
 
 **The ECS service takes 3–4 minutes to create even at zero desired count.**
@@ -101,6 +104,33 @@ code 9 — a name collision — and `useradd: user 'proxy' already exists` doesn
 say that the name is baked into the base image rather than something earlier
 in the Dockerfile. Pick a different name for the app user (`appuser`,
 `shinyproxy`, anything not already spoken for) and move on.
+
+**A base R package still has to be `library()`d.** `parallel` ships with R
+and is not installable from CRAN, so it is absent from `renv.lock` and must
+stay out of the image's `PACKAGES` list — `install.packages("parallel")`
+fails the build. None of that means the app can skip attaching it. The
+microsimulation model's `Rcode_Packages.R` had `parallel` removed on exactly
+that reasoning; `server.R` calls `makeCluster`, `clusterEvalQ`, `parLapply`
+and `stopCluster` unqualified, so the app started, served, passed the smoke
+test, and then died the first time a user pressed Run Model with
+`could not find function "makeCluster"`. Two different questions: *does the
+image contain it* (base packages: always) and *does the session attach it*
+(only if something calls `library()`).
+
+**The build's smoke test proves the app SERVES, not that it RUNS.** It starts
+the container and waits for HTTP 200 on `/`. Anything that only executes
+behind a button — a model run, a file export, a tab that lazily sources a
+script — is completely unverified by the pipeline. Budget for a human to
+press the buttons on a new app before anyone else sees it, and read
+`/ecs/shiny/apps` afterwards rather than assuming silence means success.
+
+**Log-group note.** Every portal-created app logs to the SHARED group
+`/ecs/shiny/apps`, with one stream per task named
+`<app-key>/app/<task-id>`. It is not `/ecs/shiny/<app>` — that shape only
+exists for the Terraform-era `dashboard` and `proxy`. And on Git Bash,
+`aws logs ... --log-group-name /ecs/shiny/apps` fails validation because MSYS
+rewrites the leading slash into a Windows path; run CloudWatch commands from
+PowerShell.
 
 ## AWS
 

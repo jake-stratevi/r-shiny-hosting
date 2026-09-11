@@ -47,17 +47,18 @@ export function useSidebar(): SidebarContextValue {
 }
 
 /**
- * Collapsed unless this browser has said otherwise. assembled.work opens on
- * the icon rail and so do we: the first thing a client sees should be their
- * tools, not a column of three links naming screens most of them cannot open.
- * An explicit choice is stored and still wins, in both directions.
+ * Expanded unless this browser has said otherwise. A first-time visitor, or
+ * one whose browser blocks site data outright, should see the full rail —
+ * labelled links, not a column of unexplained icons — and decide for
+ * themselves whether to shrink it. An explicit choice is stored and still
+ * wins, in both directions.
  */
 function readCollapsed(): boolean {
   try {
-    return window.localStorage.getItem(SIDEBAR_KEY) !== 'expanded'
+    return window.localStorage.getItem(SIDEBAR_KEY) === 'collapsed'
   } catch {
-    // Site data blocked: fall back to the default rather than to "open".
-    return true
+    // Site data blocked: fall back to the default, which is now "open".
+    return false
   }
 }
 
@@ -201,6 +202,13 @@ export function SidebarGroup({ children }: { children: ReactNode }) {
  * A group heading. Collapsed to icon width it is pulled out of flow rather
  * than removed, so the icons do not jump when the rail opens again — the
  * same `-mt-8 opacity-0` trick theirs uses.
+ *
+ * `-mt-8` only moves the label visually; the box is still there, still
+ * exactly where it was laid out, which is on top of the last row of
+ * whichever group comes before this one. `opacity-0` does not stop it from
+ * being hit-tested, so every click aimed at that row above landed on this
+ * invisible label instead. `pointer-events-none` is the missing half of
+ * "hidden" — it was already out of the accessibility tree via `aria-hidden`.
  */
 export function SidebarGroupLabel({ children }: { children: ReactNode }) {
   const { collapsed, isMobile } = useSidebar()
@@ -209,7 +217,7 @@ export function SidebarGroupLabel({ children }: { children: ReactNode }) {
   return (
     <div
       className={`flex h-8 shrink-0 items-center rounded-md px-2 text-xs font-medium text-sidebar-foreground/70 transition-[margin,opacity] duration-200 ease-linear ${
-        hidden ? '-mt-8 opacity-0' : ''
+        hidden ? '-mt-8 pointer-events-none opacity-0' : ''
       }`}
       aria-hidden={hidden}
     >

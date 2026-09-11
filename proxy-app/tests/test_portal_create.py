@@ -32,6 +32,10 @@ ADMIN = "jake@stratevi.com"
 CREATOR = "nick@stratevi.com"
 BOTH = "yi@stratevi.com"
 NOBODY = "intern@stratevi.com"
+#: A creator by name, outside every staff domain. Refused anyway.
+OUTSIDER = "contractor@notstratevi.com"
+
+_UNSET = object()
 
 PORTAL_HOST = "shinyplatform.tools.stratevi.com"
 DOMAIN = "tools.stratevi.com"
@@ -244,6 +248,7 @@ def portal_for(
     store=None,
     admins=(ADMIN, BOTH),
     creators=(CREATOR, BOTH),
+    staff=_UNSET,
     denylist=(),
     uploads=None,
     provisioner=None,
@@ -279,6 +284,15 @@ def portal_for(
         tasks=FakeTasks(),
         admins=portal.AdminList(reader(admins), clock=Clock(0.0)),
         creators=portal.CreatorList(reader(creators), clock=Clock(0.0)),
+        # Unset means no collaborator, so the Portal evaluates
+        # registry.DEFAULT_STAFF_DOMAINS -- every address in this file is
+        # @stratevi.com, so the staff gate is transparent unless a test asks
+        # for it.
+        staff=(
+            None
+            if staff is _UNSET
+            else portal.StaffDomains(reader(staff), clock=Clock(0.0))
+        ),
         creation=bundle,
         recorder=recorder or FakeRecorder(),
         clock=clock or Clock(),
@@ -293,16 +307,37 @@ async def test_me_reports_create_permission_separately_from_admin():
     handler = portal_for()
 
     creator = body_of(await handler.handle(request("/api/v1/me", email=CREATOR)))
-    assert creator == {"email": CREATOR, "is_admin": False, "can_create": True}
+    assert creator == {
+        "email": CREATOR,
+        "is_admin": False,
+        "can_create": True,
+        "is_staff": True,
+    }
 
     admin = body_of(await handler.handle(request("/api/v1/me", email=ADMIN)))
-    assert admin == {"email": ADMIN, "is_admin": True, "can_create": False}
+    assert admin == {
+        "email": ADMIN,
+        "is_admin": True,
+        "can_create": False,
+        "is_staff": True,
+    }
 
     both = body_of(await handler.handle(request("/api/v1/me", email=BOTH)))
-    assert both == {"email": BOTH, "is_admin": True, "can_create": True}
+    assert both == {
+        "email": BOTH,
+        "is_admin": True,
+        "can_create": True,
+        "is_staff": True,
+    }
 
     nobody = body_of(await handler.handle(request("/api/v1/me", email=NOBODY)))
-    assert nobody == {"email": NOBODY, "is_admin": False, "can_create": False}
+    assert nobody == {
+        "email": NOBODY,
+        "is_admin": False,
+        "can_create": False,
+        # Staff, just unprivileged. The two answers are independent.
+        "is_staff": True,
+    }
 
 
 @pytest.mark.asyncio
@@ -409,6 +444,64 @@ async def test_an_unconfigured_pipeline_is_503_not_403_for_a_creator(
     )
     assert response.status == 503
     assert "not configured" in body_of(response)["error"]
+
+
+@pytest.mark.parametrize("path,method,body", P2A_ROUTES)
+@pytest.mark.asyncio
+async def test_a_non_staff_creator_is_403_on_every_p2a_route(path, method, body):
+    """Named in `creator_emails` and still refused, on every route.
+
+    Creation provisions IAM roles and puts a hostname in public DNS. Being
+    on the list is necessary; being staff is the other half, and no list
+    edit can substitute for it.
+    """
+    response = await portal_for(
+        creators=(CREATOR, OUTSIDER), staff=("stratevi.com",)
+    ).handle(
+        request(path, method=method, email=OUTSIDER,
+                body=body if body is not None else good_body(), headers=csrf())
+    )
+    assert response.status == 403
+    assert "not permitted to create" in body_of(response)["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_non_staff_creator_is_403_not_503_even_with_no_pipeline():
+    """The 403/503 distinction survives the new check.
+
+    503 means "nobody can yet, the pipeline is not deployed". A non-staff
+    caller is the other case -- "you personally may not" -- so they must not
+    be told the deployment's configuration state instead.
+    """
+    response = await portal_for(
+        creators=(CREATOR, OUTSIDER), staff=("stratevi.com",), configured=False
+    ).handle(
+        request("/api/v1/uploads", method="POST", email=OUTSIDER,
+                body={"filename": "app.zip", "size": 10}, headers=csrf())
+    )
+    assert response.status == 403
+
+
+@pytest.mark.asyncio
+async def test_me_collapses_can_create_for_a_non_staff_creator():
+    handler = portal_for(creators=(CREATOR, OUTSIDER), staff=("stratevi.com",))
+    assert body_of(await handler.handle(request("/api/v1/me", email=OUTSIDER))) == {
+        "email": OUTSIDER,
+        "is_admin": False,
+        "can_create": False,
+        "is_staff": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_staff_creator_still_reaches_the_routes():
+    """The gate must not be a blanket refusal."""
+    response = await portal_for(staff=("stratevi.com",)).handle(
+        request("/api/v1/apps/validate-key", method="POST", email=CREATOR,
+                body={"key": "q3-uptake"}, headers=csrf())
+    )
+    assert response.status == 200
+    assert body_of(response)["ok"] is True
 
 
 @pytest.mark.asyncio

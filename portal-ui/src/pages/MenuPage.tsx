@@ -79,8 +79,16 @@ export function MenuPage() {
           {apps.map((app) => (
             <MenuTile key={app.host} app={app} />
           ))}
-          {/* Creation is its own permission — admin does not imply it. */}
-          {me?.can_create ? <NewAppTile /> : null}
+          {/* Creation is its own permission — admin does not imply it — and
+              it is staff-only on top of that. `can_create` from /me is
+              ALREADY the effective answer (the API ANDs the creator list
+              with the staff domains), so the second test here is redundant
+              against a correct backend. It is here anyway: this tile is the
+              one creation affordance outside the rail, and it should not be
+              rendered on the strength of another layer having got it right.
+              Both flags absent reads as false, which is the fail-closed
+              behaviour the rest of the shell already has. */}
+          {me?.can_create && me?.is_staff ? <NewAppTile /> : null}
         </ul>
       )}
     </>

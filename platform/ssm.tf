@@ -1,9 +1,9 @@
 # ---------------------------------------------------------------------------
 # The contract between this stack and the app stacks.
 #
-# App stacks read these with data "aws_ssm_parameter", which means they do NOT
+# Consumers read these with data "aws_ssm_parameter", which means they do NOT
 # need access to this stack's Terraform state. Deploy platform once, then
-# dashboard and model independently, in either order, by different people.
+# proxy (and any app stack) independently, by different people.
 #
 # Parameters are Standard tier: free.
 # ---------------------------------------------------------------------------
@@ -22,6 +22,10 @@ locals {
     ecs_cluster_arn         = aws_ecs_cluster.this.arn
     task_execution_role_arn = aws_iam_role.task_execution.arn
 
+    # UNUSED since 2026-09-11: the waker/sleeper Lambdas that assumed this
+    # role are gone (ADR-0002's mechanism; the proxy does the scaling now).
+    # Kept because removing it is a plan diff for no benefit -- delete both
+    # this and aws_iam_role.scaler next time this stack is touched anyway.
     scaler_role_arn = aws_iam_role.scaler.arn
 
     # ----------------------------------------------------------------------
@@ -38,19 +42,12 @@ locals {
     #               create-managed-login-branding call for the new client
     #               (see the banner in cognito.tf). Expected and intended.
     #
-    #   portal/     The ADR-0013 Lambda portal (rule 50) read the OLD values
-    #               at its last apply and still works, because its client
-    #               lives in the Hub pool and nothing here touches it. It
-    #               MUST NOT BE RE-APPLIED before it is retired: an apply
-    #               would recreate its client against the new pool, and it
-    #               would then serve "Login pages unavailable" until someone
-    #               ran the branding CLI. portal.md retires this stack
-    #               anyway; let it die rather than migrating it.
+    #   portal/     GONE. The ADR-0013 Lambda portal was destroyed
+    #               2026-09-10; the React portal on the proxy replaced it.
     #
-    #   model/      Same trap, same rule: proxied = false, service off, last
-    #               applied against the Hub pool. Do not re-apply it; migrate
-    #               it to the proxy (proxied = true, its own client gone)
-    #               when its image lands.
+    #   model/      GONE. Destroyed 2026-09-11 rather than migrated -- that
+    #               app is now `microsimulation-model`, created through the
+    #               portal. Its stale client in the Hub pool went with it.
     #
     #   dashboard/  Already migrated to the proxy, no client of its own, so
     #               it reads none of this.
@@ -59,26 +56,14 @@ locals {
     cognito_user_pool_arn = local.cognito_user_pool_arn
     cognito_domain        = aws_cognito_user_pool_domain.this.domain
 
-    # CONTRACT NOTE -- why this is "COGNITO" and not a "none" sentinel.
-    #
-    # proxy/cognito.tf does, verbatim:
-    #   supported_identity_providers = ["COGNITO", <this value>]
-    # with no filtering. Cognito rejects any provider name that does not
-    # exist in the pool, so exporting "none" -- or "" -- FAILS client
-    # creation against a pool with no federation, and the fix would have to
-    # live in proxy/, which this change is not allowed to touch.
-    #
-    # "COGNITO" is a real, always-valid value naming the pool's own native
-    # directory, so the proxy client is created unchanged and correctly: the
-    # only sign-in method offered is exactly the only one that works. The
-    # list becomes ["COGNITO", "COGNITO"]; the API accepts it. If that ever
-    # shows up as a permanent one-line diff on the proxy plan, the fix is a
-    # one-word change over there -- wrap the list in distinct() -- not a
-    # different value here.
-    #
-    # Entra federation into the new pool is a LATER, OPTIONAL step. When it
-    # happens, set var.cognito_staff_idp_name to the provider's name and
-    # re-apply; consumers pick it up on their next apply with no code change.
+    # The IdP name consumers put into supported_identity_providers. It is
+    # "Microsoft365" (the Entra federation, added by hand 2026-09-10), NOT
+    # the "COGNITO" placeholder this briefly held -- while it was the
+    # placeholder, a proxy apply would have stripped the Microsoft button
+    # off the login page and locked every federated user out. proxy/cognito.tf
+    # also carries ignore_changes on supported_identity_providers now, so a
+    # stale value here can no longer do that damage on its own. Both belts
+    # are deliberate; see docs/GOTCHAS.md.
     oidc_provider_name = var.cognito_staff_idp_name
 
     route53_zone_id    = var.route53_zone_id

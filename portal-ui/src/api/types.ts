@@ -53,6 +53,16 @@ export interface Me {
    * behaviour the decision asks for.
    */
   can_create?: boolean
+  /**
+   * Is this a Stratevi address, rather than an external client's? The proxy
+   * decides it by exact domain equality against a configured staff-domain set
+   * (`registry.is_staff_email`), never a suffix test.
+   *
+   * Optional for the same reason as `can_create`: a backend that predates the
+   * field reads as `undefined` -> falsy -> non-staff, so the screens gated on
+   * it stay shut. Fail closed.
+   */
+  is_staff?: boolean
 }
 
 /** One tile from GET /api/v1/menu */

@@ -1,6 +1,6 @@
 # ADR-0006: Client-side heartbeat for idle detection
 
-**Status:** Accepted, known fragile
+**Status:** **Retired 2026-09-11.** Idle detection is server-side in the ADR-0014 proxy, which counts real requests and open websockets. The last `proxied = false` app (`model/`) was destroyed that day and no waker or sleeper Lambda exists anywhere in the account, so nothing reads `RequestCountPerTarget` any more and no app needs the snippet. Kept for the reasoning below — the failure it describes (a websocket generating zero HTTP requests, so the sleeper scales a task out from under a live user) is why the proxy counts sockets rather than requests.
 **Date:** 2026-09-01
 
 ## Context

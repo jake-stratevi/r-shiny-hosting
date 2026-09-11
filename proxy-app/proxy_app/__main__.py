@@ -83,6 +83,14 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
             creators=portal_mod.CreatorList(
                 apps.creator_emails, log=log.getChild("portal")
             ),
+            # ANDed with both lists above: named in admin_emails or
+            # creator_emails is necessary but not sufficient, the address
+            # also has to be staff. Falls back to
+            # registry.DEFAULT_STAFF_DOMAINS when the row does not say --
+            # see that constant for why this one does not fail closed.
+            staff=portal_mod.StaffDomains(
+                apps.staff_domains, log=log.getChild("portal")
+            ),
             creation=creation,
             # The awake-hours ledger reads the wake/sleep events the recorder
             # above writes, and stores its daily rollups in the SAME table --

@@ -26,6 +26,21 @@ Admin gate: `shiny-proxy-apps` row `host = "__config__"` with `admin_emails`
 registry, sleeper, and menu must skip them. Non-admins get 403 on everything
 under `/api/v1/apps`.
 
+Staff gate: the same row's `staff_domains` (SS) holds the email domains that
+count as Stratevi staff, and **every control-plane permission is ANDed with
+it**. Admin and creator both require the caller's email domain to be in that
+set *as well as* their address being in the relevant list, so an address
+outside the domains is refused even when somebody puts it in `admin_emails`
+or `creator_emails`. Matching is case-insensitive and on the **exact**
+domain — no wildcards, no suffix test, so `notstratevi.com` and
+`stratevi.com.evil.test` both fail. A missing, empty or unreadable attribute
+falls back to `("stratevi.com",)` (`registry.DEFAULT_STAFF_DOMAINS`), which
+is deliberately neither "everyone" nor "nobody": the first would delete the
+boundary on a partial read, and the second would lock every administrator
+out of a live deployment at once. `GET /menu` is **not** affected — being
+entitled to *use* an app is the app row's `allowed_emails`, and external
+clients sign in to the same pool (ADR-0015).
+
 ## Shapes
 
 Timestamps: epoch seconds (numbers), `null` when absent. `status` (stored):
@@ -33,7 +48,16 @@ Timestamps: epoch seconds (numbers), `null` when absent. `status` (stored):
 `awake | starting | asleep | disabled | expired`.
 
 ### GET /api/v1/me
-`{ "email": "jake@stratevi.com", "is_admin": true }`
+```json
+{ "email": "jake@stratevi.com", "is_admin": true, "can_create": true,
+  "is_staff": true }
+```
+`is_admin` and `can_create` are the **effective** answers — the list AND the
+staff domain, exactly what the gates will decide — so the UI never renders an
+affordance the next request 403s. `is_staff` is reported separately because it
+answers a different question ("am I inside the organisation"), which is what a
+staff-only screen keys off. A non-staff address in `admin_emails` reads
+`is_admin: false` here. `can_create` is P2a's addition (below).
 
 ### GET /api/v1/menu  (any authenticated user)
 Apps whose entitlement includes the caller (same rules as the proxy's access
@@ -122,9 +146,12 @@ happen behind the ALB).
 
 ## P2a additions — creation (see portal-p2a.md)
 
-`GET /me` gains `can_create` (bool, from `__config__.creator_emails`;
-independent of `is_admin`). Every route below requires creator permission —
-admin alone is 403 — and the CSRF header on mutating calls.
+`GET /me` gains `can_create` (bool, from `__config__.creator_emails` AND the
+staff gate; independent of `is_admin`). Every route below requires creator
+permission — admin alone is 403, and a non-staff address is 403 even when it
+is listed in `creator_emails` — and the CSRF header on mutating calls. The
+403/503 split is unchanged: 403 is "you personally may not" (not a creator,
+or not staff), 503 is "nobody can yet, the pipeline is not deployed".
 
 ### POST /api/v1/apps/validate-key
 Body `{ "key": "tarpeyo-uptake" }` → `{ "ok": true, "host_preview":

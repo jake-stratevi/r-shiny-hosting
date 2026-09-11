@@ -64,12 +64,40 @@ CONFIG_PREFIX = "__"
 #: P2a adds two more string sets to the SAME row: `creator_emails` (who may
 #: create apps -- deliberately NOT implied by admin, see portal-p2a.md) and
 #: `key_denylist` (substrings banned from public hostnames, editable without
-#: a deploy).
+#: a deploy). `staff_domains` is the fourth, and it gates both of the first
+#: two: a control-plane permission is only ever granted to a staff address.
 CONFIG_HOST = "__config__"
 
 CONFIG_ADMIN_EMAILS = "admin_emails"
 CONFIG_CREATOR_EMAILS = "creator_emails"
 CONFIG_KEY_DENYLIST = "key_denylist"
+CONFIG_STAFF_DOMAINS = "staff_domains"
+
+#: The email domains that count as Stratevi staff when the ``__config__`` row
+#: does not say -- because the attribute is missing, is an empty set, or could
+#: not be read at all.
+#:
+#: THIS DEFAULT IS DELIBERATE AND IT IS NEITHER OF THE TWO OBVIOUS CHOICES.
+#:
+#: "Everyone is staff" (an empty set matching every address) would turn a
+#: partial read of the config row into a silent removal of the whole staff
+#: boundary, which is the one failure mode this gate exists to prevent. It is
+#: not an option.
+#:
+#: "Nobody is staff" -- the fail-closed rule every other set in this row
+#: follows -- is wrong HERE for a different reason: the staff check is ANDed
+#: with `admin_emails`, so a blip that empties it locks every administrator
+#: out of a live control plane, including the person who would fix it. Failing
+#: closed on a *membership* list refuses one caller; failing closed on a
+#: *domain* list refuses all of them at once, and there is no break-glass
+#: account on this platform (ADR-0015).
+#:
+#: So the fallback is the narrowest possible non-empty answer: the one domain
+#: this platform's staff actually sign in from. It cannot admit a stranger --
+#: an outside address matches no domain here either way -- and it keeps
+#: administration working while DynamoDB is unhappy. The config row can only
+#: ever widen it, and widening it is a reviewed Terraform commit.
+DEFAULT_STAFF_DOMAINS: tuple[str, ...] = ("stratevi.com",)
 
 
 class HostTaken(Exception):
@@ -117,6 +145,52 @@ def normalize_host(host: str | None) -> str:
         text = text.split(":", 1)[0]
 
     return text.rstrip(".").lower()
+
+
+def normalize_domain(domain: str | None) -> str:
+    """Reduce one ``staff_domains`` entry to what an email can be compared to.
+
+    Tolerates the three ways a human writes a domain into a Terraform list --
+    ``stratevi.com``, ``@stratevi.com``, ``STRATEVI.COM.`` -- and nothing
+    else. No wildcards: ``*.stratevi.com`` normalizes to a domain no address
+    can equal, which is the safe way for an unsupported syntax to fail.
+    """
+    text = (domain or "").strip().lower()
+    if text.startswith("@"):
+        text = text[1:]
+    return text.rstrip(".").strip()
+
+
+def email_domain(email: str | None) -> str:
+    """The domain part of an address, or ``""`` if there isn't exactly one.
+
+    An address with no ``@``, with two of them, or with an empty local part
+    has no domain this module will vouch for, and returning "" means every
+    caller refuses it.
+    """
+    address = (email or "").strip().lower()
+    if address.count("@") != 1:
+        return ""
+    local, _, domain = address.partition("@")
+    if not local.strip():
+        return ""
+    return normalize_domain(domain)
+
+
+def is_staff_email(email: str | None, domains: Iterable[str]) -> bool:
+    """Is this address in one of ``domains``?
+
+    **Exact domain equality, never a suffix test.** ``endswith(".com")``-style
+    matching is how ``notstratevi.com`` and ``stratevi.com.evil.test`` get in;
+    both must fail, and they do because the whole domain is compared as one
+    string. Case-insensitive on both sides.
+    """
+    found = email_domain(email)
+    if not found:
+        return False
+    return found in {
+        cleaned for cleaned in (normalize_domain(d) for d in (domains or ())) if cleaned
+    }
 
 
 @dataclass(frozen=True)
@@ -393,6 +467,12 @@ class CachedRegistry:
 
     async def key_denylist(self) -> tuple[str, ...]:
         return await self._store.key_denylist()  # type: ignore[attr-defined]
+
+    async def staff_domains(self) -> tuple[str, ...]:
+        # Same reasoning again: `portal.StaffDomains` owns the cache, and it is
+        # the one that applies DEFAULT_STAFF_DOMAINS when this comes back empty
+        # or raises.
+        return await self._store.staff_domains()  # type: ignore[attr-defined]
 
     async def reserve(self, app: App) -> None:
         # Invalidated after, not before: until the conditional put succeeds
@@ -740,6 +820,28 @@ class DynamoAppStore:
         """
         return await self._config_strings(CONFIG_KEY_DENYLIST)
 
+    async def staff_domains(self) -> tuple[str, ...]:
+        """The ``__config__`` row's ``staff_domains`` string set, as written.
+
+        Returned RAW -- empty when the attribute is absent or empty, and
+        raising when the read fails -- because this is the reader, not the
+        policy. :data:`DEFAULT_STAFF_DOMAINS` is what "the row did not say"
+        means, and `portal.StaffDomains` applies it: the caller has to be able
+        to tell the two apart before it can decide.
+
+        Entries are normalized on the way out (lowercased, a leading ``@`` and
+        a trailing root dot removed) so a Terraform list written
+        ``@Stratevi.com`` still matches an address.
+        """
+        return tuple(
+            cleaned
+            for cleaned in (
+                normalize_domain(entry)
+                for entry in await self._config_strings(CONFIG_STAFF_DOMAINS)
+            )
+            if cleaned
+        )
+
     async def _config_strings(self, attribute: str) -> tuple[str, ...]:
         response = await asyncio.to_thread(
             self._client.get_item,
@@ -866,7 +968,9 @@ __all__ = [
     "CONFIG_ADMIN_EMAILS",
     "CONFIG_CREATOR_EMAILS",
     "CONFIG_KEY_DENYLIST",
+    "CONFIG_STAFF_DOMAINS",
     "CachedRegistry",
+    "DEFAULT_STAFF_DOMAINS",
     "DynamoAppStore",
     "HostTaken",
     "STATUS_BUILDING",
@@ -874,7 +978,10 @@ __all__ = [
     "app_from_item",
     "app_item",
     "apps_from_items",
+    "email_domain",
     "is_config_host",
+    "is_staff_email",
+    "normalize_domain",
     "normalize_host",
     "patch_expression",
     "patch_value",

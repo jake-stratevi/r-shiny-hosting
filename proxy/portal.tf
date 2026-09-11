@@ -8,10 +8,25 @@
 # Do not add other attributes to this row from application code, or Terraform
 # will fight over it on the next apply.
 #
-# Every person appears twice: Cognito returns a different email per identity
-# provider (native @stratevi.com vs Microsoft365-federated
-# @assembledintelligence.co.uk). Same rule as every allowlist -- see the
-# comment in catalog.yaml and docs/STATUS.md.
+# One entry per person, and that is new. Until 2026-09-10 every person
+# appeared TWICE here, because the Hub pool had two identity providers for the
+# same human and returned a different email from each: a native
+# @stratevi.com account and a Microsoft365-federated
+# @assembledintelligence.co.uk one. Both had to be listed or an admin lost
+# the control plane depending on which button they clicked.
+#
+# ADR-0015 ended that. The platform has its own pool, staff sign in only
+# through the Microsoft365 federation, and it emits the @stratevi.com
+# address; the native staff accounts were deleted (they would now collide
+# with the federated identity -- AliasExistsException, see CLAUDE.md). The
+# four @assembledintelligence.co.uk entries were therefore addresses that
+# nothing could ever authenticate as, in the row that decides who
+# administers the platform, which is the wrong place to keep dead entries.
+# They are gone.
+#
+# Do not re-add a second address for one person. If a staff member ever
+# arrives on a different domain, widen `staff_domains` below and add the one
+# address they actually sign in with.
 # ---------------------------------------------------------------------------
 
 resource "aws_dynamodb_table_item" "portal_config" {
@@ -23,13 +38,9 @@ resource "aws_dynamodb_table_item" "portal_config" {
     # Alphabetical -- DynamoDB returns string sets sorted, and any other
     # order here shows up as a perpetual cosmetic diff on every plan.
     admin_emails = { SS = [
-      "jake.pistotnik@assembledintelligence.co.uk",
       "jake@stratevi.com",
-      "josh.epstein@assembledintelligence.co.uk",
       "josh@stratevi.com",
-      "nick.adair@assembledintelligence.co.uk",
       "nick@stratevi.com",
-      "yi.pan@assembledintelligence.co.uk",
       "yi@stratevi.com",
     ] }
 
@@ -42,10 +53,15 @@ resource "aws_dynamodb_table_item" "portal_config" {
     # hostname. Creation is the permission that spends money and publishes
     # something clients can see, so it is its own set.
     #
-    # Jake decides who else goes in here. Adding a creator is a reviewed
-    # commit and an apply, not a click in the UI -- that is the entire point
-    # of the row being Terraform-owned, so please do not "temporarily" add
-    # someone through the console.
+    # All four staff may create (Jake, 2026-09-11). The permission stays a
+    # separate set for the reason above -- it is not implied by admin, and it
+    # is not implied by being staff either: `staff_domains` below is a
+    # NECESSARY condition for holding it, never a sufficient one, so an
+    # address has to be both staff and named here.
+    #
+    # Adding a creator is a reviewed commit and an apply, not a click in the
+    # UI -- that is the entire point of the row being Terraform-owned, so
+    # please do not "temporarily" add someone through the console.
     #
     # The API reads this and returns can_create from /me so the UI can hide
     # the "+" card rather than dangle a 403. Fail-closed: a missing row, an
@@ -54,8 +70,43 @@ resource "aws_dynamodb_table_item" "portal_config" {
     # Alphabetical, same reason as admin_emails above -- DynamoDB returns
     # string sets sorted and any other order is a perpetual plan diff.
     creator_emails = { SS = [
-      "jake.pistotnik@assembledintelligence.co.uk",
       "jake@stratevi.com",
+      "josh@stratevi.com",
+      "nick@stratevi.com",
+      "yi@stratevi.com",
+    ] }
+
+    # --- who counts as STAFF ----------------------------------------------
+    #
+    # The domain half of every control-plane permission. The portal ANDs this
+    # with the two sets above: `admin_emails` and `creator_emails` say WHO,
+    # this says who is eligible to be named. An address outside these domains
+    # is refused admin and create even when it is named in one of those sets,
+    # so "only Stratevi staff hold the control plane" is enforced by the
+    # service rather than by whoever last pruned a list. That matters because
+    # both sets also accumulate client addresses by mistake far more easily
+    # than anyone expects -- an app's `allowed_emails` is the right place for
+    # a client, and this makes pasting one here harmless.
+    #
+    # It does NOT restrict who may USE an app. Entitlement is the app row's
+    # `allowed_emails` and /menu is unchanged: clients sign in to the same
+    # pool (ADR-0015's two populations) and see their own dashboards.
+    #
+    # Matching is on the email's domain, case-insensitively, EXACT domain
+    # only -- no wildcards and no suffix test, so "notstratevi.com" and
+    # "stratevi.com.evil.test" both fail.
+    #
+    # Unlike the other three sets this one does not fail closed. A missing,
+    # empty or unreadable attribute falls back to ("stratevi.com",) in
+    # proxy_app/registry.py (DEFAULT_STAFF_DOMAINS -- the reasoning is in
+    # full there): failing closed on a domain list would refuse EVERY
+    # administrator at once during a DynamoDB blip, and this platform has no
+    # break-glass account. The fallback can only ever be narrower than what
+    # is written here, never wider.
+    #
+    # Alphabetical, same reason as every set above.
+    staff_domains = { SS = [
+      "stratevi.com",
     ] }
 
     # --- P2a: substrings banned from a public hostname --------------------

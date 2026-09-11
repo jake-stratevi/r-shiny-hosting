@@ -27,8 +27,11 @@ app client moves on its next apply.
 
 **Two populations, one pool** (settled 2026-09-10, after the switchover):
 
-- **Staff** — `@stratevi.com` and `@assembledintelligence.co.uk` — sign in
-  through the **Microsoft365** Entra federation. Cognito auto-provisions
+- **Staff** — `@stratevi.com` — sign in
+  through the **Microsoft365** Entra federation. (The
+  `@assembledintelligence.co.uk` aliases were removed from the pool on
+  2026-09-11 and `staff_domains` in the portal's `__config__` row now names
+  `stratevi.com` alone; see proxy/portal.tf.) Cognito auto-provisions
   each as a `microsoft365_<sub>` EXTERNAL_PROVIDER user on their *first*
   sign-in; they do not exist in the pool before that.
 - **External clients** are created by an admin (later, by the portal) with

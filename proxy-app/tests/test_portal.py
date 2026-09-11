@@ -30,6 +30,14 @@ USER = "nick@stratevi.com"
 
 PORTAL_HOST = "dashboards.tools.stratevi.com"
 
+#: An address outside every staff domain. On `admin_emails` in some tests
+#: below and refused anyway -- that is the point of the staff gate.
+OUTSIDER = "consultant@notstratevi.com"
+
+#: "the fixture did not mention staff domains", which is a different thing
+#: from "the config row holds an empty set".
+_UNSET = object()
+
 
 # --- fakes -----------------------------------------------------------------
 
@@ -163,6 +171,7 @@ def portal_for(
     store=None,
     tasks=None,
     admins=(ADMIN,),
+    staff=_UNSET,
     recorder=None,
     audit_reader=None,
     dist=None,
@@ -173,10 +182,28 @@ def portal_for(
             raise admins
         return admins
 
+    def domain_reader(value):
+        async def read():
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        return read
+
     return portal.Portal(
         apps=store if store is not None else FakeStore([app_row()]),
         tasks=tasks if tasks is not None else FakeTasks(),
         admins=portal.AdminList(reader, clock=Clock(0.0)),
+        # `staff` unset means no collaborator at all, which is how most of
+        # this file's fixtures are built: the Portal then evaluates
+        # registry.DEFAULT_STAFF_DOMAINS, and every address here is
+        # @stratevi.com, so the gate is transparent unless a test says
+        # otherwise.
+        staff=(
+            None
+            if staff is _UNSET
+            else portal.StaffDomains(domain_reader(staff), clock=Clock(0.0))
+        ),
         recorder=recorder or FakeRecorder(),
         audit=audit_reader,
         dist=dist,
@@ -265,6 +292,181 @@ def _resolved(value):
     return future
 
 
+# --- the staff gate: a list entry is necessary, never sufficient -----------
+
+
+def _staff(value=("stratevi.com",)):
+    async def read():
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    return portal.StaffDomains(read, clock=Clock(0.0))
+
+
+@pytest.mark.asyncio
+async def test_an_address_in_a_staff_domain_is_staff():
+    staff = _staff()
+    assert await staff.is_staff(ADMIN) is True
+    assert await staff.is_staff("YI@STRATEVI.COM") is True
+    assert await staff.is_staff("  nick@Stratevi.com  ") is True
+
+
+@pytest.mark.asyncio
+async def test_a_lookalike_domain_is_never_a_staff_domain():
+    """Exact domain equality, not a suffix test.
+
+    `notstratevi.com` ends with the staff domain and
+    `stratevi.com.evil.test` begins with it; a substring or endswith check
+    admits one or the other, and both are registrable by anybody.
+    """
+    staff = _staff()
+    for address in (
+        "someone@notstratevi.com",
+        "someone@stratevi.com.evil.test",
+        "someone@xstratevi.com",
+        "someone@mail.stratevi.com",  # a subdomain is a different domain
+        "someone@stratevi.co",
+        "stratevi.com@evil.test",  # the staff domain in the LOCAL part
+    ):
+        assert await staff.is_staff(address) is False, address
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_address_is_never_staff():
+    staff = _staff()
+    for address in ("", "   ", "jake", "@stratevi.com", "a@b@stratevi.com"):
+        assert await staff.is_staff(address) is False, address
+
+
+@pytest.mark.asyncio
+async def test_a_missing_staff_domains_attribute_falls_back_to_the_default():
+    """Not to "everyone", and not to "nobody" either.
+
+    An empty or absent attribute must not read as "no domain restriction" --
+    that would delete the boundary during a partial read. It must also not
+    lock every administrator out of a live deployment, which is what the
+    fail-closed rule the other __config__ sets follow would do here.
+    """
+    staff = _staff(())
+    assert await staff.domains() == frozenset(registry.DEFAULT_STAFF_DOMAINS)
+    assert await staff.is_staff(ADMIN) is True
+    assert await staff.is_staff(OUTSIDER) is False
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_staff_domains_attribute_falls_back_to_the_default():
+    staff = _staff(RuntimeError("dynamodb is unhappy"))
+    assert await staff.domains() == frozenset(registry.DEFAULT_STAFF_DOMAINS)
+    assert await staff.is_staff(ADMIN) is True
+    assert await staff.is_staff(OUTSIDER) is False
+
+
+@pytest.mark.asyncio
+async def test_the_config_row_can_widen_the_staff_domains():
+    staff = _staff(("stratevi.com", "@Assembled.example"))
+    assert await staff.is_staff("someone@assembled.example") is True
+    assert await staff.is_staff(ADMIN) is True
+    assert await staff.is_staff(OUTSIDER) is False
+
+
+@pytest.mark.asyncio
+async def test_a_non_staff_address_on_the_admin_list_is_still_refused():
+    """The bug this gate exists for.
+
+    Being named in `admin_emails` is necessary and NOT sufficient: the
+    guarantee is a property of the service, not of whoever last pruned the
+    Terraform list.
+    """
+    handler = portal_for(admins=(ADMIN, OUTSIDER), staff=("stratevi.com",))
+
+    refused = await handler.handle(request("/api/v1/apps", email=OUTSIDER))
+    assert refused.status == 403
+    assert body_of(refused)["error"] == "you are not a platform administrator"
+
+    allowed = await handler.handle(request("/api/v1/apps", email=ADMIN))
+    assert allowed.status == 200
+
+
+ADMIN_ROUTES = [
+    ("/api/v1/apps", "GET", None),
+    ("/api/v1/apps/model.tools.stratevi.com", "GET", None),
+    ("/api/v1/apps/model.tools.stratevi.com", "PATCH", {"label": "Mine now"}),
+    ("/api/v1/apps/model.tools.stratevi.com/audit", "GET", None),
+    ("/api/v1/apps/model.tools.stratevi.com/costs", "GET", None),
+    ("/api/v1/costs", "GET", None),
+]
+
+
+@pytest.mark.parametrize("path,method,body", ADMIN_ROUTES)
+@pytest.mark.asyncio
+async def test_a_non_staff_admin_is_403_on_every_admin_route(path, method, body):
+    handler = portal_for(
+        admins=(ADMIN, OUTSIDER),
+        staff=("stratevi.com",),
+        audit_reader=FakeAuditReader(),
+    )
+    response = await handler.handle(
+        request(path, method=method, email=OUTSIDER, body=body,
+                headers={portal.CSRF_HEADER: "1"})
+    )
+    assert response.status == 403
+
+
+@pytest.mark.asyncio
+async def test_me_collapses_admin_to_false_for_a_non_staff_address():
+    """The UI must not be told about a permission the next request refuses."""
+    handler = portal_for(admins=(ADMIN, OUTSIDER), staff=("stratevi.com",))
+    assert body_of(await handler.handle(request("/api/v1/me", email=OUTSIDER))) == {
+        "email": OUTSIDER,
+        "is_admin": False,
+        "can_create": False,
+        "is_staff": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_staff_gate_does_not_touch_the_menu():
+    """Entitlement to USE an app is the app row's business.
+
+    Clients sign in to the same pool (ADR-0015's two populations) and must
+    keep seeing the dashboards they are entitled to. The staff gate is about
+    the control plane only.
+    """
+    store = FakeStore(
+        [
+            app_row(
+                host="dashboard.tools.stratevi.com",
+                ecs_service="shiny-dashboard",
+                access_mode=registry.MODE_ALL_USERS,
+                allowed_emails=[],
+            ),
+            app_row(
+                host="client.tools.stratevi.com",
+                label="Client Dashboard",
+                ecs_service="shiny-client",
+                access_mode=registry.MODE_USERS,
+                allowed_emails=[OUTSIDER],
+            ),
+        ]
+    )
+    handler = portal_for(store=store, staff=("stratevi.com",))
+    response = await handler.handle(request("/api/v1/menu", email=OUTSIDER))
+    assert response.status == 200
+    assert sorted(tile["host"] for tile in body_of(response)["apps"]) == [
+        "client.tools.stratevi.com",
+        "dashboard.tools.stratevi.com",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_portal_wired_without_a_staff_list_still_enforces_the_default():
+    """There is no configuration in which the check is simply absent."""
+    handler = portal_for(admins=(ADMIN, OUTSIDER))
+    assert (await handler.handle(request("/api/v1/apps", email=OUTSIDER))).status == 403
+    assert (await handler.handle(request("/api/v1/apps", email=ADMIN))).status == 200
+
+
 # --- /api/v1/me ------------------------------------------------------------
 
 
@@ -278,6 +480,9 @@ async def test_me_reports_the_caller_and_whether_they_are_an_admin():
         "email": ADMIN,
         "is_admin": True,
         "can_create": False,
+        # The UI hides staff-only screens on this, so it is reported on its
+        # own rather than inferred from the two permissions above.
+        "is_staff": True,
     }
 
 
@@ -288,6 +493,7 @@ async def test_me_reports_a_non_admin_as_one():
         "email": USER,
         "is_admin": False,
         "can_create": False,
+        "is_staff": True,
     }
 
 

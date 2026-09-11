@@ -33,6 +33,7 @@ const LATENCY_MS = 180
 const state: App[] = fixtureApps.map((a) => ({ ...a, allowed_emails: [...a.allowed_emails] }))
 const ADMIN_KEY = 'portalMockAdmin'
 const CREATOR_KEY = 'portalMockCreator'
+const STAFF_KEY = 'portalMockStaff'
 
 function storedFlag(key: string): boolean | null {
   try {
@@ -57,12 +58,14 @@ let me = {
   ...fixtureMe,
   is_admin: storedFlag(ADMIN_KEY) ?? fixtureMe.is_admin,
   can_create: storedFlag(CREATOR_KEY) ?? fixtureMe.can_create ?? false,
+  is_staff: storedFlag(STAFF_KEY) ?? fixtureMe.is_staff ?? false,
 }
 
 /**
- * Flip either gate from the console and reload:
+ * Flip any gate from the console and reload:
  *   __portalMock.setAdmin(false)     the non-admin view + 403 state
  *   __portalMock.setCreator(false)   an admin who may not create
+ *   __portalMock.setStaff(false)     the external-client view: Apps only
  */
 declare global {
   // eslint-disable-next-line no-var
@@ -70,6 +73,7 @@ declare global {
     | {
         setAdmin(v: boolean): void
         setCreator(v: boolean): void
+        setStaff(v: boolean): void
         apps(): App[]
         /** Make the next created app's build fail, to see that screen. */
         failNextBuild(v?: boolean): void
@@ -84,6 +88,10 @@ globalThis.__portalMock = {
   setCreator(v: boolean) {
     me = { ...me, can_create: v }
     rememberFlag(CREATOR_KEY, v)
+  },
+  setStaff(v: boolean) {
+    me = { ...me, is_staff: v }
+    rememberFlag(STAFF_KEY, v)
   },
   apps: () => state,
   failNextBuild(v = true) {

@@ -7,6 +7,7 @@ import {
   Loading,
   NoAdminAccess,
   NoCreateAccess,
+  NoStaffAccess,
 } from './components/states'
 import { useResource } from './hooks/useResource'
 import { MeContext, useMe } from './lib/meContext'
@@ -14,6 +15,7 @@ import { AdminAppDetailPage } from './pages/AdminAppDetailPage'
 import { AdminAppsPage } from './pages/AdminAppsPage'
 import { CostsPage } from './pages/CostsPage'
 import { BuildPage } from './pages/BuildPage'
+import { HelpPage } from './pages/HelpPage'
 import { MenuPage } from './pages/MenuPage'
 import { NewAppWizard } from './pages/NewAppWizard'
 
@@ -22,6 +24,24 @@ function RequireAdmin({ children }: { children: ReactNode }) {
   const me = useMe()
   if (!me) return <Loading label="Checking access" />
   if (!me.is_admin) return <NoAdminAccess />
+  return <>{children}</>
+}
+
+/**
+ * Everything except the app menu belongs to the people who run the platform.
+ * `is_staff` is the proxy's verdict on the signed-in domain, and an absent
+ * field fails closed exactly as `can_create` does — a backend that predates
+ * the field shuts these screens rather than opening them.
+ *
+ * This is the OUTER gate, so it wraps `RequireAdmin` and `RequireCreate`
+ * rather than replacing either: a Stratevi account still needs the admin or
+ * creator permission underneath, and an external client never reaches the
+ * question. The API refuses all of this too; two gates is the point.
+ */
+function RequireStaff({ children }: { children: ReactNode }) {
+  const me = useMe()
+  if (!me) return <Loading label="Checking access" />
+  if (!me.is_staff) return <NoStaffAccess />
   return <>{children}</>
 }
 
@@ -75,45 +95,63 @@ export default function App() {
         <Routes>
           <Route path="/" element={<MenuPage />} />
           <Route
+            path="/help"
+            element={
+              <RequireStaff>
+                <HelpPage />
+              </RequireStaff>
+            }
+          />
+          <Route
             path="/admin"
             element={
-              <RequireAdmin>
-                <AdminAppsPage />
-              </RequireAdmin>
+              <RequireStaff>
+                <RequireAdmin>
+                  <AdminAppsPage />
+                </RequireAdmin>
+              </RequireStaff>
             }
           />
           {/* Before /admin/apps/:host: "costs" is a screen, not a hostname. */}
           <Route
             path="/admin/costs"
             element={
-              <RequireAdmin>
-                <CostsPage />
-              </RequireAdmin>
+              <RequireStaff>
+                <RequireAdmin>
+                  <CostsPage />
+                </RequireAdmin>
+              </RequireStaff>
             }
           />
           {/* Before /admin/apps/:host, or "new" is read as a hostname. */}
           <Route
             path="/admin/apps/new"
             element={
-              <RequireCreate>
-                <NewAppWizard />
-              </RequireCreate>
+              <RequireStaff>
+                <RequireCreate>
+                  <NewAppWizard />
+                </RequireCreate>
+              </RequireStaff>
             }
           />
           <Route
             path="/admin/apps/:host/build"
             element={
-              <RequireCreate>
-                <BuildPage />
-              </RequireCreate>
+              <RequireStaff>
+                <RequireCreate>
+                  <BuildPage />
+                </RequireCreate>
+              </RequireStaff>
             }
           />
           <Route
             path="/admin/apps/:host"
             element={
-              <RequireAdmin>
-                <AdminAppDetailPage />
-              </RequireAdmin>
+              <RequireStaff>
+                <RequireAdmin>
+                  <AdminAppDetailPage />
+                </RequireAdmin>
+              </RequireStaff>
             }
           />
           <Route path="*" element={<Navigate to="/" replace />} />

@@ -4,6 +4,7 @@ import { useMe } from '../lib/meContext'
 import { AppSidebar } from './AppSidebar'
 import { MenuIcon, PanelLeftIcon } from './icons'
 import { SidebarInset, SidebarProvider, useSidebar } from './sidebar'
+import { Tour } from './Tour'
 
 /**
  * The shell, after assembled.work's `AppSidebarLayout`: a collapsible rail
@@ -36,6 +37,11 @@ function AppHeader() {
     <header className="flex h-14 shrink-0 items-center gap-2 border-b border-sidebar-border/70 px-4 md:px-6">
       <SidebarTrigger />
       <Breadcrumbs />
+      {/* The only other thing this bar carries — pushed to the far right so
+          it never competes with the trail for the reader's eye. */}
+      <div className="ml-auto flex shrink-0 items-center">
+        <Tour />
+      </div>
     </header>
   )
 }

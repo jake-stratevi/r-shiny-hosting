@@ -162,6 +162,29 @@ export function NoCreateAccess() {
   )
 }
 
+/**
+ * Everything except the app menu is for the people who run the platform.
+ * A third card rather than reusing the admin one, on the same reasoning: an
+ * external client is not an admin *and* not staff, and "you're not an admin"
+ * would suggest a list they could be added to.
+ */
+export function NoStaffAccess() {
+  return (
+    <div className="mx-auto max-w-lg rounded-lg border border-border bg-card px-10 py-12 text-center shadow-sm">
+      <h2 className="text-base font-semibold text-foreground">This page is for Stratevi staff</h2>
+      <p className="mx-auto mt-3 max-w-sm text-sm leading-relaxed text-muted-foreground">
+        Your sign-in worked. This part of the portal covers running the
+        platform — creating apps, managing access, reading costs — and is
+        limited to Stratevi accounts. The apps shared with you are all on your
+        own list.
+      </p>
+      <div className="mt-6 flex justify-center">
+        <ButtonLink href="/">Back to your tools</ButtonLink>
+      </div>
+    </div>
+  )
+}
+
 /** Any other failure. Renders the API's own `{error}` text when there is one. */
 export function ErrorState({
   error,
