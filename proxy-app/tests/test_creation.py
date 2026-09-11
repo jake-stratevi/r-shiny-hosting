@@ -142,11 +142,88 @@ def test_shape_is_checked_before_the_denylist():
 
 
 def test_the_host_is_the_key_under_the_platform_domain():
+    """With no suffix -- which is what every app created before the suffix
+    existed is called, and what `host_for` must keep producing for them."""
     assert creation.host_for("tarpeyo-uptake", DOMAIN) == (
         "tarpeyo-uptake.tools.stratevi.com"
     )
     assert creation.host_for(" tarpeyo ", "Tools.Stratevi.COM") == (
         "tarpeyo.tools.stratevi.com"
+    )
+
+
+def test_the_hosts_of_the_apps_that_predate_the_suffix_are_unchanged():
+    """`dashboard` and `microsimulation-model` keep the addresses that are in
+    people's bookmarks. Nothing in this change rewrites an existing row --
+    the suffix is minted in `Provisioner.create` and nowhere else."""
+    for key in ("dashboard", "microsimulation-model"):
+        assert creation.host_for(key, DOMAIN) == f"{key}.tools.stratevi.com"
+
+
+# --- the host: the random half ---------------------------------------------
+
+
+def test_a_suffix_is_six_lowercase_base32_characters():
+    assert creation.HOST_SUFFIX_CHARS == 6
+    assert set(creation.HOST_SUFFIX_ALPHABET) == set("abcdefghijklmnopqrstuvwxyz234567")
+    for _ in range(200):
+        suffix = creation.host_suffix()
+        assert len(suffix) == 6
+        assert set(suffix) <= set(creation.HOST_SUFFIX_ALPHABET)
+
+
+def test_a_suffix_is_not_derived_from_anything():
+    """If it were a function of the key it would be decoration, not defence.
+    200 draws from a 32^6 space colliding even once would be a bug, not luck.
+    """
+    drawn = {creation.host_suffix() for _ in range(200)}
+    assert len(drawn) == 200
+
+
+def test_two_apps_with_the_same_key_get_different_hostnames():
+    first = creation.host_for("model", DOMAIN, creation.host_suffix())
+    second = creation.host_for("model", DOMAIN, creation.host_suffix())
+    assert first != second
+    assert first.startswith("model-") and second.startswith("model-")
+
+
+def test_the_suffixed_host_is_the_key_then_a_hyphen_then_the_suffix():
+    assert creation.host_for("tarpeyo-uptake", DOMAIN, "a2b3c4") == (
+        "tarpeyo-uptake-a2b3c4.tools.stratevi.com"
+    )
+    assert creation.host_label("tarpeyo", "a2b3c4") == "tarpeyo-a2b3c4"
+    assert creation.host_label("tarpeyo", "") == "tarpeyo"
+
+
+def test_the_suffix_adds_no_extra_dot_so_the_wildcard_certificate_covers_it():
+    """`*.tools.stratevi.com` matches ONE label. A suffix that introduced a
+    dot would produce a name the ALB has no certificate for, and every app
+    created afterwards would greet its client with a browser warning."""
+    host = creation.host_for("tarpeyo-uptake", DOMAIN, creation.host_suffix())
+    assert host.count(".") == DOMAIN.count(".") + 1
+    label, rest = host.split(".", 1)
+    assert rest == DOMAIN
+    assert "." not in label
+
+
+def test_the_longest_possible_hostname_is_still_a_legal_dns_label():
+    longest = "a" * creation.MAX_KEY_CHARS
+    label = creation.host_label(longest, creation.host_suffix())
+    assert len(label) == creation.MAX_KEY_CHARS + 1 + creation.HOST_SUFFIX_CHARS
+    assert len(label) <= creation.MAX_HOST_LABEL_CHARS
+
+
+def test_the_preview_shows_the_shape_and_never_a_real_suffix():
+    """What the wizard is given. It is deliberately NOT a hostname that will
+    ever resolve -- see `creation.host_preview` and the validate-key route."""
+    preview = creation.host_preview("tarpeyo-uptake", DOMAIN)
+    assert preview == "tarpeyo-uptake-xxxxxx.tools.stratevi.com"
+    # The placeholder occupies exactly the room the real suffix will, so the
+    # wizard shows the right length and the address does not jump about when
+    # the real one arrives on the build screen.
+    assert len(creation.HOST_SUFFIX_PLACEHOLDER) == creation.HOST_SUFFIX_CHARS
+    assert len(preview) == len(
+        creation.host_for("tarpeyo-uptake", DOMAIN, creation.host_suffix())
     )
 
 

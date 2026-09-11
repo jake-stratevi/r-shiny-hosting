@@ -144,8 +144,20 @@ export const MAX_SESSION_HOURS_MAX = 168
 /** POST /api/v1/apps/validate-key — 200 either way; this is a form affordance. */
 export interface ValidateKeyResult {
   ok: boolean
-  /** Present when `ok`: the hostname the key resolves to. */
-  host?: string
+  /**
+   * Present when `ok`: the SHAPE of the hostname, with the random suffix
+   * standing in as `xxxxxx` — e.g. `q3-uptake-xxxxxx.tools.stratevi.com`.
+   *
+   * Not the hostname, and deliberately. A created app's address carries a
+   * random suffix minted server-side at CREATE time so it cannot be guessed
+   * by anyone not on the platform; this route reserves nothing, so any
+   * suffix it returned would be a different one from the one the app gets.
+   * The wizard therefore shows the shape and says the suffix is added on
+   * create; the real address appears on the build screen.
+   */
+  host_preview?: string
+  /** How many characters the real suffix will have. */
+  suffix_chars?: number
   /** Present when not `ok`: shown to the user verbatim. */
   reason?: string
 }
@@ -248,3 +260,108 @@ export const MAX_ZIP_MB = 100
 /** Key shape, from portal-p2a.md "Hostnames are policed". The API re-checks. */
 export const KEY_MIN_LENGTH = 3
 export const KEY_MAX_LENGTH = 30
+
+// ---------------------------------------------------------------------------
+// Costs. See portal-api.md "Costs — per-app awake time and estimated spend".
+//
+// Every figure here is an ESTIMATE derived from recorded awake time and
+// published Fargate rates, never a billed amount. The payload carries its own
+// `disclaimer` string and the UI must show it.
+// ---------------------------------------------------------------------------
+
+/** One day of a single app's awake time. Quiet days are omitted. */
+export interface CostDay {
+  day: string
+  awake_hours: number
+}
+
+/** One app's line for one month. */
+export interface AppCost {
+  host: string
+  label: string
+  app_key: string
+  /** Fargate units. 0/0 when the row predates the portal and is unrecognised. */
+  cpu: number
+  memory: number
+  /**
+   * False when the app's task size is unknown — a hand-provisioned row whose
+   * `app_key` is not one of the two known sizes. `estimated_cost` is then 0
+   * and `hourly_rate` null, because guessing a size would put a fabricated
+   * number on a screen labelled "cost".
+   */
+  size_known: boolean
+  hourly_rate: number | null
+  awake_hours: number
+  estimated_cost: number
+  /** epoch seconds; null = never ran in this period. */
+  last_run: number | null
+  currently_awake: boolean
+  daily: CostDay[]
+  /**
+   * Open map of degenerate-event counts from the audit trail
+   * (`unclosed`, `duplicate_wake`, `orphan_close`, ...). Render unknown keys
+   * neutrally, or not at all.
+   */
+  anomalies: Record<string, number>
+}
+
+/** One itemised shared charge. Never divided across apps. */
+export interface OverheadLine {
+  name: string
+  monthly: number
+  note: string
+}
+
+export interface Overhead {
+  shared: true
+  lines: OverheadLine[]
+  monthly_total: number
+  /** Pro-rated by elapsed time — a fixed charge, not a per-app allocation. */
+  to_date_total: number
+  elapsed_fraction: number
+  note: string
+}
+
+/** One period block: per-app compute, the shared line, and a total. */
+export interface CostPeriod {
+  /** `YYYY-MM` */
+  month: string
+  start: number
+  end: number
+  complete: boolean
+  apps: AppCost[]
+  apps_total: number
+  overhead: Overhead
+  total: number
+}
+
+export interface Rates {
+  vcpu_hour: number
+  gb_hour: number
+  region: string
+  source: string
+}
+
+/** GET /api/v1/costs */
+export interface CostsReport {
+  currency: string
+  basis: string
+  generated_at: number
+  /** The ledger could not be read; per-app figures may be incomplete. */
+  stale: boolean
+  rates: Rates
+  disclaimer: string
+  month_to_date: CostPeriod
+  previous_month: CostPeriod
+}
+
+/** GET /api/v1/apps/{host}/costs */
+export interface AppCostsReport {
+  currency: string
+  basis: string
+  generated_at: number
+  rates: Rates
+  disclaimer: string
+  month_to_date: AppCost
+  previous_month: AppCost
+}

@@ -127,11 +127,18 @@ independent of `is_admin`). Every route below requires creator permission —
 admin alone is 403 — and the CSRF header on mutating calls.
 
 ### POST /api/v1/apps/validate-key
-Body `{ "key": "tarpeyo-uptake" }` → `{ "ok": true, "host":
-"tarpeyo-uptake.tools.stratevi.com" }` or `{ "ok": false, "reason":
-"<human message>" }`. Checks shape, reserved names, `key_denylist`, and
-collision with an existing row. 200 either way — this is a form affordance,
-not an error.
+Body `{ "key": "tarpeyo-uptake" }` → `{ "ok": true, "host_preview":
+"tarpeyo-uptake-xxxxxx.tools.stratevi.com", "suffix_chars": 6 }` or
+`{ "ok": false, "reason": "<human message>" }`. Checks shape, reserved
+names, `key_denylist`, and collision with an existing row. 200 either way —
+this is a form affordance, not an error.
+
+It returns the **shape**, not the address. A created host carries a random
+suffix (portal-p2a.md), and this route reserves nothing — so any suffix it
+returned would be a different one from the app's, and round-tripping a
+suffix through the browser would let the caller pick it, which would make it
+guessable. The wizard renders the `xxxxxx` as visibly random and says the
+real link arrives on the build screen.
 
 ### POST /api/v1/uploads
 Body `{ "filename": "app.zip", "size": 12345678 }` → `{ "upload_key":
@@ -178,5 +185,133 @@ the app object (`status: building`). Conflict on the key → **409**.
 New `live_state` values: `building`, `build_failed`. Renderers must already
 tolerate unknown values (P1 rule), so this is additive.
 
+## Costs — per-app awake time and estimated spend (admin)
+
+Additive, and independent of P2a. Both routes require **admin**; creator
+permission alone is 403. Read-only, so no CSRF header.
+
+### Why not Cost Explorer
+
+The obvious mechanism — CE grouped by a cost-allocation tag — was
+investigated and rejected as the primary source:
+
+- Cost-allocation tags were never activated on account `652063276768`. A CE
+  query grouped by `Project` today returns one undifferentiated bucket.
+  Activating them is an admin action, takes ~24 hours, and is **not
+  retroactive** — history stays unattributed.
+- CE data lags about a day, is daily-granular at best, and bills per request.
+- No amount of tagging attributes the **shared ALB** or the **always-on proxy
+  task** to any one app, which is most of the fixed cost.
+
+The proxy already writes `wake`, `sleep`, `force_sleep` and `expired` per app
+into `shiny-proxy-audit` with timestamps. Those are an exact record of when
+each app's task was running, and Fargate bills per second for exactly that
+window. Awake-seconds × the published rate for the task's cpu/memory is the
+compute cost, with no lag and no CE charges. `proxy_app/usage.py` owns it.
+
+**These are estimates and every payload says so** (`basis: "awake_time"`,
+plus a `disclaimer` string). Cost Explorer remains the source of truth for an
+invoice; this answers "which app is responsible for it".
+
+### Where the numbers come from
+
+Rates live in exactly one place, `proxy_app/usage.py`: `$0.04048` per
+vCPU-hour and `$0.004445` per GB-hour (AWS Fargate on-demand, Linux/X86,
+us-east-1). They reproduce CLAUDE.md's cost model exactly — 0.5 vCPU + 2 GB →
+`$0.02913/hr`, 4 vCPU + 16 GB → `$0.23304/hr`, and the proxy's 0.25 vCPU +
+512 MB → `$9.01/month`.
+
+A row created before the portal existed carries no `cpu`/`memory`. Those fall
+back to a known size by `app_key` (`dashboard`, `model`); anything else
+reports `size_known: false` and `estimated_cost: 0` rather than guessing.
+
+### GET /api/v1/costs  (admin)
+
+```json
+{ "currency": "USD", "basis": "awake_time", "generated_at": 1789000000,
+  "stale": false,
+  "rates": { "vcpu_hour": 0.04048, "gb_hour": 0.004445,
+             "region": "us-east-1", "source": "AWS Fargate on-demand ..." },
+  "disclaimer": "Estimates derived from recorded awake time ...",
+  "month_to_date": {
+    "month": "2026-09", "start": 1788307200, "end": 1790899200,
+    "complete": false,
+    "apps": [
+      { "host": "dashboard.tools.stratevi.com",
+        "label": "Treatment Pathway Dashboard", "app_key": "dashboard",
+        "cpu": 512, "memory": 2048, "size_known": true,
+        "hourly_rate": 0.02913, "awake_hours": 12.34,
+        "estimated_cost": 0.36, "last_run": 1789000000,
+        "currently_awake": false,
+        "daily": [ { "day": "2026-09-02", "awake_hours": 4.0 } ],
+        "anomalies": { "unclosed": 1 } }
+    ],
+    "apps_total": 0.36,
+    "overhead": {
+      "shared": true,
+      "lines": [ { "name": "Application Load Balancer", "monthly": 16.43,
+                   "note": "Always on. $0.0225/hr x 730 ..." } ],
+      "monthly_total": 29.94, "to_date_total": 15.47,
+      "elapsed_fraction": 0.5167,
+      "note": "Shared by every app and attributable to none ..." },
+    "total": 15.83
+  },
+  "previous_month": { "...": "same shape, complete: true" } }
+```
+
+- **Overhead is its own line and is never divided across apps.** A per-app
+  share of a load balancer is a number invented by division, and a made-up
+  allocation is worse than an honest "shared". `to_date_total` pro-rates the
+  monthly figure by *elapsed time* — arithmetic on a time-based fixed charge,
+  not an allocation across apps. `total` = `apps_total` + the shared figure
+  for that period (`to_date_total` for a partial month, `monthly_total` for a
+  complete one).
+- `apps` is sorted most expensive first, then by label. `__`-rows are never
+  included.
+- `stale: true` means the ledger could not be read and the per-app figures may
+  be incomplete. Deliberately **200, not 503**: the overhead line is the
+  larger number on this platform and does not depend on the ledger.
+- `anomalies` is an open map of degenerate-event counts (`unclosed`,
+  `duplicate_wake`, `orphan_close`, `awake_at_window_start`, `undated`,
+  `nonpositive`). Render unknown keys neutrally, or not at all.
+- `last_run` is `number | null` (epoch seconds); `hourly_rate` is `null` when
+  `size_known` is false.
+- 503 `{"error": ...}` when the deployment has no ledger wired.
+
+### GET /api/v1/apps/{host}/costs  (admin)
+
+One app, both periods, with the per-day breakdown:
+
+```json
+{ "currency": "USD", "basis": "awake_time", "generated_at": 1789000000,
+  "rates": { "...": "..." }, "disclaimer": "...",
+  "month_to_date": { "...": "one `apps` entry from above" },
+  "previous_month": { "...": "same" } }
+```
+
+404 for an unknown host or a `__`-row, same as every other app route.
+
+### Storage — the awake-hours ledger
+
+Day totals are rolled up once and stored; the whole audit table is never read
+per request. Rollup rows live in **`shiny-proxy-audit`** under partition key
+`host = "__usage__"`, sort key `<YYYY-MM-DD>#<app host>` (date first, so one
+month for every app is a single Query over a contiguous range).
+
+That table rather than `shiny-proxy-apps` because the apps table is Scanned
+by the sleeper every minute and must not grow a row per app per day; and
+rather than a new table because the audit table already holds the source
+events, is already partitioned and time-sorted, and the proxy task role
+already has `Query` and `PutItem` on it — **so this needs no Terraform and no
+IAM change.** Rollup rows carry no `ttl` (audit rows expire at 90 days; a
+rollup that vanished would take the previous month's comparison with it).
+
+A day wholly in the past is written `final` and never recomputed. Today's
+partial row is recomputed when older than five minutes. Recomputation is lazy
+— triggered by a request, not by a background job — so a cold table
+self-heals and the proxy does no work nobody asked for.
+
 ## Out of P2a scope (do not stub half-built)
 Releases/version history, rollback, delete/purge, reminders. P2b.
+Cost *forecasting*, budgets and alerts: there is no data for a trend line
+beyond two months, and a chart drawn from that would be fiction.

@@ -14,7 +14,8 @@ import {
 
 const OK_KEY: KeyCheck = {
   state: 'ok',
-  host: 'access-atlas.tools.stratevi.com',
+  hostPreview: 'access-atlas-xxxxxx.tools.stratevi.com',
+  suffixChars: 6,
   reason: null,
 }
 
@@ -102,18 +103,18 @@ describe('stepBlocker: details', () => {
   })
 
   it('blocks while the key is still being checked', () => {
-    const check: KeyCheck = { state: 'checking', host: null, reason: null }
+    const check: KeyCheck = { state: 'checking', hostPreview: null, suffixChars: null, reason: null }
     expect(stepBlocker('details', draft(), check)).toMatch(/checking/i)
   })
 
   it('repeats the API’s rejection verbatim', () => {
     const reason = 'That name can’t be used in a public hostname — pick a project codename.'
-    const check: KeyCheck = { state: 'rejected', host: null, reason }
+    const check: KeyCheck = { state: 'rejected', hostPreview: null, suffixChars: null, reason }
     expect(stepBlocker('details', draft(), check)).toBe(reason)
   })
 
   it('blocks when the key could not be checked at all', () => {
-    const check: KeyCheck = { state: 'unknown', host: null, reason: 'offline' }
+    const check: KeyCheck = { state: 'unknown', hostPreview: null, suffixChars: null, reason: 'offline' }
     expect(stepBlocker('details', draft(), check)).toMatch(/could not be checked/i)
   })
 

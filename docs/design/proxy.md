@@ -141,6 +141,20 @@ Teams too — wrong default for an internal tool.
   produces them for a service) and `dynamodb:Scan` (the sleeper enumerates
   the apps table once a minute) — both beyond the sketch above, both already
   in the Terraform stack.
+- **Response headers.** Every response the proxy emits carries
+  `Content-Security-Policy: frame-ancestors 'none'`, `X-Frame-Options: DENY`
+  and `Referrer-Policy: strict-origin-when-cross-origin` (plus the existing
+  `nosniff` on our own pages). For a PROXIED app response the rules differ
+  per header, deliberately: `X-Frame-Options` is **overridden** (two values
+  is undefined behaviour, and an app shipping `ALLOWALL` must not be able to
+  opt its users out of a platform control); a CSP the app set is **merged**,
+  keeping its directives, stripping any `frame-ancestors` it declared and
+  appending ours as a second comma-separated policy; `Referrer-Policy`
+  **defers** to the app, since that is its business and `no-referrer` is
+  stricter than our floor. `nosniff` is NOT imposed on app content.
+  The websocket 101 carries none of these on purpose — its headers are
+  negotiated, not chosen, and nothing frames a protocol switch; the
+  protection lives on the document that opened the socket.
 - Timeouts: no response-header or server read/write timeouts that would kill
   a long-running Shiny computation or an idle-but-open websocket. Idle
   cleanup is the sleeper's job, not a socket timer's.

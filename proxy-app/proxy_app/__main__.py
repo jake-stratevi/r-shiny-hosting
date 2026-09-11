@@ -14,11 +14,13 @@ import sys
 
 import boto3
 from aiohttp import web
+from botocore.config import Config as BotoConfig
 
 from . import activity as activity_mod
 from . import audit as audit_mod
 from . import config as config_mod
 from . import ecsctl, portal as portal_mod, provision, registry, server, signout, sleeper
+from . import usage as usage_mod
 
 #: Both short enough that a revoked entitlement or a replaced task is picked up
 #: within seconds, long enough that a page full of assets is one lookup rather
@@ -82,6 +84,16 @@ async def serve(cfg: config_mod.Config, log: logging.Logger) -> None:
                 apps.creator_emails, log=log.getChild("portal")
             ),
             creation=creation,
+            # The awake-hours ledger reads the wake/sleep events the recorder
+            # above writes, and stores its daily rollups in the SAME table --
+            # so it needs no new infrastructure and no new IAM (the task role
+            # already has Query and PutItem there). See usage.py.
+            usage=usage_mod.UsageLedger(
+                usage_mod.DynamoUsageStore(
+                    dynamodb, cfg.audit_table, log.getChild("usage")
+                ),
+                log=log.getChild("usage"),
+            ),
             recorder=recorder,
             audit=audit_mod.DynamoAuditReader(dynamodb, cfg.audit_table),
             dist=cfg.portal_dist,
@@ -212,7 +224,22 @@ def _creation(
     bundle = provision.Creation(
         domain=settings.domain,
         uploads=provision.Boto3Uploads(
-            boto_session.client("s3"), settings.uploads_bucket
+            # SIGNATURE VERSION 4, EXPLICITLY. Do not drop this.
+            #
+            # boto3's default for an S3 presigned URL against the global
+            # endpoint is the legacy SigV2, and SigV2 puts Content-Type into
+            # the string-to-sign. A browser ALWAYS sends a Content-Type for a
+            # File (Chrome on Windows picks application/x-zip-compressed for
+            # a .zip), the presigner signed an empty one, and S3 rejects the
+            # PUT with 403 SignatureDoesNotMatch. curl sends no Content-Type
+            # by default, so every command-line test of the same URL passes
+            # and the bug looks like it is in the browser.
+            #
+            # SigV4 signs only `host` here, so whatever Content-Type the
+            # browser chooses is irrelevant. Verified against the real bucket:
+            # SigV2 + Content-Type = 403, SigV4 + the same header = 200.
+            boto_session.client("s3", config=BotoConfig(signature_version="s3v4")),
+            settings.uploads_bucket,
         ),
         provisioner=provisioner,
         builds=builds,

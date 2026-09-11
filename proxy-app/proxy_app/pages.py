@@ -19,6 +19,8 @@ from typing import Sequence
 
 from aiohttp import web
 
+from . import security
+
 #: Who a refused user is told to ask. Matches access.R's ACCESS_CONTACT
 #: default rather than naming an address the proxy has no way to know per app.
 DEFAULT_CONTACT = "your Stratevi contact"
@@ -67,12 +69,13 @@ def render(
         ),
     )
 
-    headers = {
-        # These pages are decisions about one caller at one moment. Never let
-        # a browser or an intermediary keep one.
-        "Cache-Control": "no-store, must-revalidate",
-        "X-Content-Type-Options": "nosniff",
-    }
+    headers = security.headers(
+        {
+            # These pages are decisions about one caller at one moment. Never
+            # let a browser or an intermediary keep one.
+            "Cache-Control": "no-store, must-revalidate",
+        }
+    )
     if retry_after:
         headers["Retry-After"] = str(int(retry_after))
 

@@ -247,3 +247,15 @@ export const CirclePlusIcon = svg(
     <path d="M12 8.5v7M8.5 12h7" />
   </>,
 )
+
+/**
+ * "Costs" in the rail and on its page. A receipt rather than a dollar sign:
+ * the screen reports an itemised estimate, and a currency glyph would promise
+ * a bill.
+ */
+export const ReceiptIcon = svg(
+  <>
+    <path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z" />
+    <path d="M9.5 8.5h5M9.5 12.5h5" />
+  </>,
+)

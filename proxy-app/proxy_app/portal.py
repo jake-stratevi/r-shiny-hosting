@@ -35,8 +35,9 @@ from urllib.parse import unquote
 
 from aiohttp import web
 
-from . import access, audit as audit_mod, identity, pages, provision, registry
+from . import access, audit as audit_mod, identity, pages, provision, registry, security
 from . import creation as creation_mod
+from . import usage as usage_mod
 from .audit import Event
 from .ecsctl import ServiceState
 from .identity import Principal
@@ -138,6 +139,14 @@ class AdminSource(Protocol):
 
 class CreatorSource(Protocol):
     async def can_create(self, email: str) -> bool: ...
+
+
+class UsageSource(Protocol):
+    """The awake-hours ledger (usage.py). Absent means no costs screen."""
+
+    async def month(
+        self, apps: Sequence[App], year: int, month: int
+    ) -> dict[str, "usage_mod.DayUsage"]: ...
 
 
 class CreationLike(Protocol):
@@ -502,6 +511,7 @@ class Portal:
         audit: AuditSource | None = None,
         creators: CreatorSource | None = None,
         creation: CreationLike | None = None,
+        usage: UsageSource | None = None,
         dist: str | Path | None = None,
         log: logging.Logger | None = None,
         clock: Callable[[], float] = time.time,
@@ -519,6 +529,10 @@ class Portal:
         # different: 403 versus 503.
         self._creators = creators
         self._creation = creation
+        # Absent on a deployment whose proxy predates the ledger, or in a
+        # test that does not care: /costs answers 503 and nothing else
+        # changes. The costs screen is a report, never a dependency.
+        self._usage = usage
         self._dist = Path(dist).resolve() if dist else None
         self._log = log or logging.getLogger("proxy.portal")
         self._clock = clock
@@ -557,6 +571,8 @@ class Portal:
             return await self._menu(request, principal)
         if rest in ("/uploads", "/uploads/"):
             return await self._upload_url(request, principal)
+        if rest in ("/costs", "/costs/"):
+            return await self._costs(request, principal)
         # Matched BEFORE the `/apps/{host}` dispatcher, which would otherwise
         # read "validate-key" as a hostname and 404 it.
         if rest in ("/apps/validate-key", "/apps/validate-key/"):
@@ -673,6 +689,10 @@ class Portal:
             return refused
 
         if len(segments) == 2:
+            if segments[1] == "costs":
+                if request.method not in ("GET", "HEAD"):
+                    return _error(405, "method not allowed")
+                return await self._app_costs(host)
             if segments[1] != "audit":
                 return _error(404, "no such endpoint")
             if request.method not in ("GET", "HEAD"):
@@ -780,6 +800,125 @@ class Portal:
             200, {"events": events, "cursor": audit_mod.encode_cursor(last_key)}
         )
 
+    # --- costs -------------------------------------------------------------
+
+    async def _costs(
+        self, request: web.Request, principal: Principal
+    ) -> web.Response:
+        """Per-app awake hours and estimated compute cost, plus the shared line.
+
+        Derived from the audit trail's wake/sleep events, not from Cost
+        Explorer -- see usage.py's module docstring for why. Everything here
+        is labelled an estimate on the wire, because it is one.
+        """
+        if request.method not in ("GET", "HEAD"):
+            return _error(405, "method not allowed")
+        refused = await self._require_admin(principal)
+        if refused is not None:
+            return refused
+        if self._usage is None:
+            return _error(503, "cost reporting is not configured on this deployment")
+
+        try:
+            rows = [
+                app
+                for app in await self._apps.apps()
+                if not registry.is_config_host(app.host)
+            ]
+        except Exception as exc:
+            self._log.error("costs: cannot list apps", extra={"reason": str(exc)})
+            return _error(503, "the application list is temporarily unavailable")
+
+        now = self._clock()
+        periods, stale = await self._periods(rows, now)
+        return _json(
+            200,
+            {
+                "currency": "USD",
+                "basis": "awake_time",
+                "generated_at": int(now),
+                "stale": stale,
+                "rates": usage_mod.rates_block(),
+                "disclaimer": usage_mod.DISCLAIMER,
+                **periods,
+            },
+        )
+
+    async def _app_costs(self, host: str) -> web.Response:
+        """The same two periods, for one app, with a per-day breakdown."""
+        if self._usage is None:
+            return _error(503, "cost reporting is not configured on this deployment")
+
+        app, failure = await self._load(host)
+        if failure is not None:
+            return failure
+        assert app is not None
+
+        now = self._clock()
+        year, month = usage_mod.month_of(now)
+        prev_year, prev_month = usage_mod.previous_month(year, month)
+
+        try:
+            current = await self._usage.month([app], year, month)
+            previous = await self._usage.month([app], prev_year, prev_month)
+        except Exception as exc:
+            self._log.error(
+                "costs: cannot read usage", extra={"host": host, "reason": str(exc)}
+            )
+            return _error(503, "cost data is temporarily unavailable")
+
+        return _json(
+            200,
+            {
+                "currency": "USD",
+                "basis": "awake_time",
+                "generated_at": int(now),
+                "rates": usage_mod.rates_block(),
+                "disclaimer": usage_mod.DISCLAIMER,
+                "month_to_date": usage_mod.app_costs(app, current, year, month),
+                "previous_month": usage_mod.app_costs(
+                    app, previous, prev_year, prev_month
+                ),
+            },
+        )
+
+    async def _periods(
+        self, rows: Sequence[App], now: float
+    ) -> tuple[dict[str, Any], bool]:
+        """Both blocks. A ledger failure degrades to zeroes plus ``stale``.
+
+        Deliberately not a 503: an admin looking at a costs screen is better
+        served by "these numbers may be incomplete" than by an error page,
+        and the overhead line -- which is the larger number on this platform
+        -- does not depend on the ledger at all.
+        """
+        year, month = usage_mod.month_of(now)
+        prev_year, prev_month = usage_mod.previous_month(year, month)
+
+        stale = False
+        try:
+            current = await self._usage.month(rows, year, month)  # type: ignore[union-attr]
+        except Exception as exc:
+            self._log.error("costs: month-to-date failed", extra={"reason": str(exc)})
+            current, stale = {}, True
+        try:
+            previous = await self._usage.month(rows, prev_year, prev_month)  # type: ignore[union-attr]
+        except Exception as exc:
+            self._log.error("costs: previous month failed", extra={"reason": str(exc)})
+            previous, stale = {}, True
+
+        return (
+            {
+                "month_to_date": usage_mod.month_payload(
+                    rows, current, year, month, now
+                ),
+                "previous_month": usage_mod.month_payload(
+                    rows, previous, prev_year, prev_month, now
+                ),
+            },
+            stale,
+        )
+
     # --- P2a: creation -----------------------------------------------------
 
     async def _validate_key(
@@ -790,6 +929,17 @@ class Portal:
         No CSRF header required, and deliberately: this mutates nothing and
         discloses nothing a caller did not already supply. Every other P2a
         route does require it.
+
+        It answers with ``host_preview``, not ``host``, and the difference is
+        the honest part. A created app's hostname carries a random suffix
+        minted at CREATE time (`creation.host_suffix`), and this route
+        reserves nothing -- so there is no hostname yet to report. Returning
+        a suffix here would either be a different one from the one the app
+        gets, or would have to be sent back by the browser on create, which
+        would let a caller choose it. Both defeat the point. So the wizard is
+        given the SHAPE plus ``suffix_chars``, and says in words that the real
+        suffix is added on create; the real hostname reaches the user on the
+        build screen, which is where the finished link lives anyway.
         """
         if request.method != "POST":
             return _error(405, "method not allowed")
@@ -812,7 +962,13 @@ class Portal:
 
         return _json(
             200,
-            {"ok": True, "host": creation_mod.host_for(str(key).strip(), self._creation.domain)},
+            {
+                "ok": True,
+                "host_preview": creation_mod.host_preview(
+                    str(key).strip(), self._creation.domain
+                ),
+                "suffix_chars": creation_mod.HOST_SUFFIX_CHARS,
+            },
         )
 
     async def _upload_url(
@@ -1156,11 +1312,12 @@ def _json(status: int, payload: Any) -> web.Response:
         text=json.dumps(payload, default=str),
         content_type="application/json",
         charset="utf-8",
-        headers={
-            # Entitlements and live state; a cached copy is a wrong copy.
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
+        headers=security.headers(
+            {
+                # Entitlements and live state; a cached copy is a wrong copy.
+                "Cache-Control": "no-store",
+            }
+        ),
     )
 
 
@@ -1170,7 +1327,11 @@ def _error(status: int, message: str) -> web.Response:
 
 
 def _file(path: Path, *, immutable: bool) -> web.FileResponse:
-    headers = {"X-Content-Type-Options": "nosniff"}
+    # index.html is the portal document itself -- the one page on the platform
+    # that carries the admin control plane -- so it gets the same
+    # frame-ancestors treatment as everything else rather than being the one
+    # response that is framable.
+    headers = security.headers()
     if immutable:
         # Vite puts a content hash in every asset filename, so the URL changes
         # whenever the bytes do and a year is safe.

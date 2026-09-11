@@ -27,7 +27,7 @@ import aiohttp
 from aiohttp import WSMsgType, web
 from multidict import CIMultiDict
 
-from . import access, audit as audit_mod, identity, pages, registry
+from . import access, audit as audit_mod, identity, pages, registry, security
 from . import signout as signout_mod
 from .audit import Event
 from .config import SignOut
@@ -450,12 +450,15 @@ class Proxy:
         if self._signout is not None:
             response: web.Response = web.Response(
                 status=302,
-                headers={
-                    "Location": signout_mod.logout_url(self._signout, landing),
-                    # A cached 302 to a logout endpoint is a page that cannot
-                    # be signed back into without clearing the browser.
-                    "Cache-Control": "no-store",
-                },
+                headers=security.headers(
+                    {
+                        "Location": signout_mod.logout_url(self._signout, landing),
+                        # A cached 302 to a logout endpoint is a page that
+                        # cannot be signed back into without clearing the
+                        # browser.
+                        "Cache-Control": "no-store",
+                    }
+                ),
             )
         else:
             # Degraded, and honest about it (config.SignOut explains why this
@@ -555,6 +558,15 @@ class Proxy:
         )
         protocols = _requested_subprotocols(request)
 
+        # No security headers on this response, deliberately. A 101 is a
+        # protocol switch, not a document: nothing renders it, nothing frames
+        # it, and `frame-ancestors` has no meaning for it. The handshake is
+        # also the most protocol-sensitive exchange the proxy performs -- the
+        # headers of a 101 are negotiated (Upgrade, Connection,
+        # Sec-WebSocket-Accept, the chosen subprotocol) rather than chosen --
+        # so nothing is added to it. The framing protection is on the HTML
+        # document that opened the socket, which is where it does the work.
+        #
         # max_msg_size=0 is unlimited on both halves: aiohttp's 4 MB default
         # would sever a Shiny session that ships a large plot or data frame.
         downstream = web.WebSocketResponse(
@@ -644,6 +656,12 @@ def _downstream_headers(headers: Any) -> CIMultiDict:
 
     Content-Length and Transfer-Encoding are dropped and re-derived: this hop
     decides its own framing. Duplicates (Set-Cookie) are preserved.
+
+    The security headers are applied LAST, over whatever the app sent, by
+    `security.harden` -- which also guarantees that the app's own
+    `X-Frame-Options` or CSP cannot survive alongside ours as a second,
+    conflicting value. Its docstring records which of the three the proxy
+    overrides and which it defers to.
     """
     skip = set(HOP_BY_HOP) | {"content-length"} | _connection_tokens(headers)
     out: CIMultiDict = CIMultiDict()
@@ -651,6 +669,7 @@ def _downstream_headers(headers: Any) -> CIMultiDict:
         if name.lower() in skip:
             continue
         out.add(name, value)
+    security.harden(out)
     return out
 
 
@@ -728,7 +747,7 @@ def _plain(status: int, body: str) -> web.Response:
         text=body + "\n",
         content_type="text/plain",
         charset="utf-8",
-        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        headers=security.headers({"Cache-Control": "no-store"}),
     )
 
 

@@ -422,15 +422,27 @@ async def test_creation_being_off_does_not_disturb_the_p1_routes():
 
 
 @pytest.mark.asyncio
-async def test_an_available_key_answers_with_the_hostname_it_would_get():
+async def test_an_available_key_answers_with_the_hostname_shape_not_a_hostname():
+    """The honest answer, and the reason it is not simply the hostname.
+
+    A created app's host carries a random suffix minted at CREATE time, and
+    this route reserves nothing. Any suffix returned here would be a
+    different one from the one the app actually gets. So the route answers
+    with the SHAPE, and the wizard says in words that the real suffix is
+    added on create -- see `creation.host_preview`.
+    """
     response = await portal_for().handle(
         request("/api/v1/apps/validate-key", method="POST", body={"key": "tarpeyo"})
     )
     assert response.status == 200
     assert body_of(response) == {
         "ok": True,
-        "host": "tarpeyo.tools.stratevi.com",
+        "host_preview": "tarpeyo-xxxxxx.tools.stratevi.com",
+        "suffix_chars": 6,
     }
+    # And in particular it does NOT hand out something that looks like a
+    # real, resolvable hostname for this key.
+    assert "host" not in body_of(response)
 
 
 @pytest.mark.parametrize(

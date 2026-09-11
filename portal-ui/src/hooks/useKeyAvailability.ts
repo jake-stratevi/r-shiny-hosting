@@ -41,17 +41,24 @@ export function useKeyAvailability(
 
     const controller = new AbortController()
     const timer = setTimeout(() => {
-      setCheck({ state: 'checking', host: null, reason: null })
+      setCheck({ ...IDLE_KEY_CHECK, state: 'checking' })
       api
         .validateKey(trimmed, controller.signal)
         .then((result) => {
           if (seq.current !== mine) return
           setCheck(
             result.ok
-              ? { state: 'ok', host: result.host ?? null, reason: null }
+              ? {
+                  state: 'ok',
+                  // The SHAPE, not a hostname. The server mints the real
+                  // suffix on create — see ValidateKeyResult.host_preview.
+                  hostPreview: result.host_preview ?? null,
+                  suffixChars: result.suffix_chars ?? null,
+                  reason: null,
+                }
               : {
+                  ...IDLE_KEY_CHECK,
                   state: 'rejected',
-                  host: null,
                   reason: result.reason ?? 'That key cannot be used.',
                 },
           )
@@ -60,8 +67,8 @@ export function useKeyAvailability(
           if (seq.current !== mine) return
           if (err instanceof DOMException && err.name === 'AbortError') return
           setCheck({
+            ...IDLE_KEY_CHECK,
             state: 'unknown',
-            host: null,
             reason: err instanceof Error ? err.message : String(err),
           })
         })

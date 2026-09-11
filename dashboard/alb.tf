@@ -107,7 +107,11 @@ resource "aws_lb_listener_rule" "this" {
       user_pool_domain           = data.aws_ssm_parameter.cognito_domain.value
       on_unauthenticated_request = "authenticate"
       scope                      = "openid email profile"
-      session_timeout            = 43200
+      # 3 hours (Jake, 2026-09-11), down from 12. This is how long a
+      # signed-in browser stays signed in without re-authenticating --
+      # the window a borrowed or unlocked laptop stays useful to someone
+      # else. Federated users barely notice: Entra re-issues silently.
+      session_timeout            = 10800
     }
   }
 

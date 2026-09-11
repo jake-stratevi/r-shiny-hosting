@@ -103,9 +103,29 @@ Say exactly this in the security questionnaire.
 
 ## Provisioning order (and rollback on failure)
 
-1. Reserve the row: `shiny-proxy-apps` item with `status: building`. The
-   slug reservation is the mutex — a conditional put on `attribute_not_exists`
-   makes concurrent creation of the same key impossible.
+1. Reserve the row: `shiny-proxy-apps` item with `status: building`, via a
+   conditional put on `attribute_not_exists(host)`.
+
+   **That put is no longer the same-key mutex, and this matters.** It was,
+   while the host was exactly the key — two wizards submitting `model` raced
+   for one partition key and one lost. Now the host carries a random suffix,
+   so two racers no longer collide: both rows would be written, both named
+   `shiny-model`, sharing one ECR repository, one IAM role and one ECS
+   service, and the second build would overwrite the first app's image at the
+   same tag. Silently.
+
+   `Provisioner._claim_key` asks the question again immediately after the
+   reserve and before the first AWS call: re-read the table, and if another
+   row holds the key, tie-break on `(created_at, host)` — a verdict every
+   racer computes identically, so exactly one survives. The loser goes to
+   `build_failed` having provisioned nothing.
+
+   It is weaker than the conditional put it replaces, because it reads
+   through an eventually-consistent Scan. Full strength wants a
+   `__key__<key>` guard row written in the same `TransactWriteItems` as the
+   app row — a data-model change, so it belongs with P2b's delete/purge work
+   (which has to clean the guard row up anyway). No new IAM: transactions
+   authorise through `dynamodb:PutItem`, which the task role already holds.
 2. ECR repository `shiny-<key>` + lifecycle policy (keep 5 images).
 3. IAM role `shiny-app-<key>-task` with the boundary.
 4. Start the CodeBuild job; poll it (`live_state: building`).
@@ -176,8 +196,27 @@ create. Admin remains what it is — editing access, expiry and settings on
 apps that exist. The API returns `can_create` from `/me` so the UI can hide
 the "+" affordance rather than dangle a 403.
 
-**Hostnames are policed.** `<key>.tools.stratevi.com` is visible to clients,
-so the key is validated against, in order: shape (3–30 chars, lowercase
+**Hostnames are policed, and unguessable.** A created app lives at
+`<key>-<6 random base32 chars>.tools.stratevi.com` — e.g. key `q3-uptake`
+becomes `q3-uptake-k4mr2t.tools.stratevi.com`. The suffix is minted with
+`secrets` at create time, is not derived from anything, and is never chosen
+by the caller (a chosen suffix is a guessable one). ~1.07 billion names per
+key. Only the HOSTNAME carries it: the key stays human-readable in the UI
+and in every resource name (`shiny-<key>` repo, `shiny-app-<key>-task` role,
+`shiny-<key>` service).
+
+This is defence in depth, not the control — entitlement is. Someone who
+guesses or is forwarded a link and is not on the allowlist still gets a 403
+and appears in the audit trail. The suffix only means a name cannot be found
+by someone who was never sent it. Apps created before 2026-09-11 keep their
+unsuffixed hostnames; nothing rewrites them.
+
+The wizard shows the SHAPE, not a link: `<key>-xxxxxx.tools.stratevi.com`
+with the random part marked, because `validate-key` reserves nothing and any
+suffix it returned would be a different one from the app's. The real,
+clickable address appears on the build screen.
+
+The key itself is validated against, in order: shape (3–30 chars, lowercase
 `a-z0-9-`, no leading/trailing/double hyphen), a reserved list (`www`,
 `api`, `auth`, `admin`, `proxy`, `shinyplatform`, `dashboards`, `portal`,
 `mail`, plus every existing app key), and a **denylist of substrings** held

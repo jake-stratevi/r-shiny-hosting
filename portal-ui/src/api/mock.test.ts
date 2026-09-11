@@ -34,10 +34,13 @@ describe('mock: validate-key', () => {
     expect(res.status).toBe(200)
   })
 
-  it('accepts a well-formed, unused key and returns the hostname', async () => {
+  it('accepts a well-formed, unused key and returns the hostname SHAPE', async () => {
+    // Not a hostname: the real suffix is minted on create, so a key check
+    // cannot honestly name the address. See portal.py's _validate_key.
     expect(await check('q3-uptake')).toEqual({
       ok: true,
-      host: 'q3-uptake.tools.stratevi.com',
+      host_preview: 'q3-uptake-xxxxxx.tools.stratevi.com',
+      suffix_chars: 6,
     })
   })
 
@@ -109,15 +112,28 @@ describe('mock: create + build', () => {
       }),
     )
 
-  it('answers 202 with a building app', async () => {
+  it('answers 202 with a building app at an unguessable hostname', async () => {
     const res = await create({ key: 'smoke-one' })
     expect(res.status).toBe(202)
-    expect(await readJson(res)).toMatchObject({
-      host: 'smoke-one.tools.stratevi.com',
+    const app = await readJson(res)
+    expect(app).toMatchObject({
+      app_key: 'smoke-one',
+      // The key stays readable in the resource names; only the address is
+      // randomised.
+      ecs_service: 'shiny-smoke-one',
       status: 'building',
       live_state: 'building',
       desired_count: 0,
     })
+    expect(app.host).toMatch(/^smoke-one-[a-z2-7]{6}\.tools\.stratevi\.com$/)
+  })
+
+  it('gives two apps with the same key two different hostnames', async () => {
+    const first = await readJson(await create({ key: 'twice-over' }))
+    // The mock's own validate-key would refuse the second, so reach past it
+    // and confirm the suffix itself is what differs.
+    const second = await readJson(await create({ key: 'twice-overx' }))
+    expect(first.host).not.toBe(second.host)
   })
 
   it('answers 409 when the key is already taken', async () => {
@@ -140,9 +156,9 @@ describe('mock: create + build', () => {
   })
 
   it('walks the phases and lands on success', async () => {
-    await create({ key: 'smoke-three' })
+    const host = String((await readJson(await create({ key: 'smoke-three' }))).host)
     const poll = async () =>
-      readJson(await mockFetch('/api/v1/apps/smoke-three.tools.stratevi.com/build'))
+      readJson(await mockFetch(`/api/v1/apps/${encodeURIComponent(host)}/build`))
 
     const first = await poll()
     expect(first.state).toBe('building')
@@ -154,9 +170,9 @@ describe('mock: create + build', () => {
   })
 
   it('takes the failure path for a key that says so', async () => {
-    await create({ key: 'smoke-fail' })
+    const host = String((await readJson(await create({ key: 'smoke-fail' }))).host)
     const poll = async () =>
-      readJson(await mockFetch('/api/v1/apps/smoke-fail.tools.stratevi.com/build'))
+      readJson(await mockFetch(`/api/v1/apps/${encodeURIComponent(host)}/build`))
 
     let last = await poll()
     for (let i = 0; i < 12 && last.state === 'building'; i++) last = await poll()

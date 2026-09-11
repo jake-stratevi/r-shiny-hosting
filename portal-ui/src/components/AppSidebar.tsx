@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useMe } from '../lib/meContext'
 import { AppearanceToggle } from './AppearanceToggle'
-import { CirclePlusIcon, GridIcon, ShieldIcon } from './icons'
+import { CirclePlusIcon, GridIcon, ReceiptIcon, ShieldIcon } from './icons'
 import { Logo, LogoMark } from './Logo'
 import { NavUser } from './NavUser'
 import {
@@ -55,7 +55,15 @@ export function AppSidebar() {
   }
 
   const adminItems: NavItem[] = me?.is_admin
-    ? [{ title: 'Manage apps', to: '/admin', end: true, icon: <ShieldIcon className="h-4 w-4" /> }]
+    ? [
+        { title: 'Manage apps', to: '/admin', end: true, icon: <ShieldIcon className="h-4 w-4" /> },
+        {
+          title: 'Costs',
+          to: '/admin/costs',
+          end: true,
+          icon: <ReceiptIcon className="h-4 w-4" />,
+        },
+      ]
     : []
 
   return (

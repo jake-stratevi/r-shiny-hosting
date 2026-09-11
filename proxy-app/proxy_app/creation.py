@@ -15,9 +15,11 @@ where the paranoid tests live.
 
 --- why the key rules are this strict ---------------------------------------
 
-``<key>.tools.stratevi.com`` is visible to clients. A key is not a variable
-name: it is a hostname a Stratevi client reads in their address bar, quotes
-in an email, and finds in their browser history a year later. So it is
+``<key>-<suffix>.tools.stratevi.com`` is visible to clients. A key is not a
+variable name: it is most of a hostname a Stratevi client reads in their
+address bar, quotes in an email, and finds in their browser history a year
+later -- the random suffix (see `host_suffix`) makes the address unguessable,
+but it does not make the key private. So the key is
 policed in three layers, in this order (portal-p2a.md, "Hostnames are
 policed"):
 
@@ -37,6 +39,7 @@ and a wizard that plays hot-and-cold with it is a disclosure oracle: submit
 from __future__ import annotations
 
 import re
+import secrets
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -77,18 +80,91 @@ DENYLIST_MESSAGE = (
 )
 
 
-def host_for(key: str, domain: str) -> str:
-    """``<key>.<domain>``, normalized the way a Host header would arrive."""
-    return registry.normalize_host(f"{(key or '').strip()}.{(domain or '').strip()}")
+# --- the random half of the hostname ---------------------------------------
+#
+# A created app lives at `<key>-<suffix>.<domain>`, not at `<key>.<domain>`.
+#
+# Entitlement is still the real control: a stranger who guesses a hostname is
+# refused by `access.decide` and sees the 403 page. The suffix is defence in
+# depth against a different problem -- that `microsimulation-model`,
+# `tarpeyo-sankey` and `client-q3-readout` are all guessable, and the mere
+# EXISTENCE of a hostname is itself a disclosure. `nslookup` against a
+# wildcard record answers for everything, but the proxy answers 404 for a
+# host with no row, so a name is confirmable by asking for it. The suffix is
+# what makes that not worth doing: 32^6 is about a billion names per key.
+#
+# It must not be derivable from the key -- otherwise it is decoration. Hence
+# `secrets`, not `random`, not a hash of anything.
+
+#: RFC 4648's base32 alphabet, lowercased: no vowel-shaped/digit-shaped
+#: confusions (no 0/1/8/9), all legal in a DNS label, all safe to read aloud
+#: down a phone line.
+HOST_SUFFIX_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567"
+
+HOST_SUFFIX_CHARS = 6
+
+#: What the wizard shows before a suffix exists. See `host_preview`.
+HOST_SUFFIX_PLACEHOLDER = "x" * HOST_SUFFIX_CHARS
+
+#: A DNS label may be 63 characters. The longest hostname this can build is
+#: MAX_KEY_CHARS + 1 (the hyphen) + HOST_SUFFIX_CHARS = 37, and it stays ONE
+#: label -- no extra dot -- so the `*.tools.stratevi.com` wildcard certificate
+#: still covers it. Both facts are asserted in the tests.
+MAX_HOST_LABEL_CHARS = 63
+
+
+def host_suffix(length: int = HOST_SUFFIX_CHARS) -> str:
+    """A fresh random label suffix. Never derived from the key."""
+    return "".join(secrets.choice(HOST_SUFFIX_ALPHABET) for _ in range(length))
+
+
+def host_label(key: str, suffix: str = "") -> str:
+    """``<key>-<suffix>``, or just ``<key>`` when there is no suffix.
+
+    The no-suffix spelling is not dead code: it is what every app created
+    before this existed is called, and `host_for` has to keep producing it
+    for them.
+    """
+    cleaned = (key or "").strip()
+    tail = (suffix or "").strip()
+    return f"{cleaned}-{tail}" if tail else cleaned
+
+
+def host_for(key: str, domain: str, suffix: str = "") -> str:
+    """``<key>-<suffix>.<domain>``, normalized as a Host header would arrive."""
+    return registry.normalize_host(
+        f"{host_label(key, suffix)}.{(domain or '').strip()}"
+    )
+
+
+def host_preview(key: str, domain: str) -> str:
+    """The hostname shape, with the suffix standing in as ``xxxxxx``.
+
+    The wizard cannot be told the real hostname: the suffix is minted at
+    CREATE time, and `validate-key` reserves nothing, so any suffix returned
+    from a key check would either be a different one from the one the app
+    gets (a lie) or would have to be round-tripped through the browser (which
+    would let the caller choose it, and a chosen suffix is a guessable one).
+
+    So the wizard is shown the shape and told plainly that the real suffix is
+    added on create. The real hostname appears on the build screen, which is
+    where the finished link lives anyway.
+    """
+    return host_for(key, domain, HOST_SUFFIX_PLACEHOLDER)
 
 
 def reserved_labels(hosts: Iterable[str], keys: Iterable[str] = ()) -> frozenset[str]:
     """Everything already taken, as bare labels.
 
-    Both halves matter. A row's ``app_key`` is what its ECR repository and
-    IAM role are named after, and a row's HOST LABEL is what actually
-    resolves -- an app seeded with a host that does not match its key (the
-    migrated ones predate the wizard) blocks both spellings, not one.
+    Both halves matter, and since hostnames gained a random suffix the
+    ``app_key`` half is the one doing the real work: a created app's host
+    label is ``<key>-<suffix>``, which will never equal a key anyone types.
+    It is ``app_key`` that stops a second app called ``model``, and with it
+    a second ``shiny-model`` ECR repository, IAM role and ECS service.
+
+    The HOST LABEL half still matters for the apps that predate the wizard
+    (``dashboard``, ``microsimulation-model``): their host label IS their
+    name, and it has to stay unclaimable.
     """
     taken: set[str] = set()
     for host in hosts:
@@ -248,8 +324,16 @@ class CreateSpec:
     expires_at: int = 0
     packages: tuple[str, ...] = field(default_factory=tuple)
 
-    def host(self, domain: str) -> str:
-        return host_for(self.key, domain)
+    def host(self, domain: str, suffix: str = "") -> str:
+        """The hostname this app will live at.
+
+        The suffix is passed in rather than generated here: a `CreateSpec` is
+        a frozen, pure value that the tests compare by equality, and a method
+        that minted fresh randomness every time it was called would be a
+        different hostname on every read. `provision.Provisioner.create`
+        mints exactly one, once.
+        """
+        return host_for(self.key, domain, suffix)
 
     def ecs_service(self, prefix: str = "shiny") -> str:
         return f"{prefix}-{self.key}"
@@ -448,7 +532,11 @@ __all__ = [
     "CreateError",
     "CreateSpec",
     "DENYLIST_MESSAGE",
+    "HOST_SUFFIX_ALPHABET",
+    "HOST_SUFFIX_CHARS",
+    "HOST_SUFFIX_PLACEHOLDER",
     "KEY_PATTERN",
+    "MAX_HOST_LABEL_CHARS",
     "MAX_KEY_CHARS",
     "MAX_UPLOAD_BYTES",
     "MIN_KEY_CHARS",
@@ -458,6 +546,9 @@ __all__ = [
     "check_key",
     "cpu_workers",
     "host_for",
+    "host_label",
+    "host_preview",
+    "host_suffix",
     "package_list",
     "reserved_labels",
     "validate_create",

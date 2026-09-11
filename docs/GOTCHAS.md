@@ -170,3 +170,64 @@ The lesson generalises: if something other than Terraform legitimately
 writes a field at runtime, `ignore_changes` it and say why, or an apply
 made for an unrelated reason will silently undo it. Terraform owns the
 resource's existence; the runtime owns that field.
+
+**PowerShell 5.1's `Compress-Archive` writes BACKSLASH path separators**,
+which the ZIP spec forbids (APPNOTE 4.4.17.1 requires forward slashes).
+Read on Linux, `Inputs\cpi.csv` is not a file inside a directory -- it is
+one file whose *name* contains a backslash, so `Inputs/` never exists and
+an R app dies at RUNTIME on `read.csv("Inputs/cpi.csv")`, long after any
+validation passed. It is inconsistent about it, too: the same command on
+the same folder produced backslashes once and forward slashes the next
+time, so "I tested it" proves nothing.
+
+The platform's `buildspec/validate.py` normalises these on extraction and
+is covered by `tests/test_buildspec_validate.py`, so an uploaded bundle is
+safe either way. Anything else that builds a zip on Windows is not: use
+Explorer's "Send to > Compressed (zipped) folder" (which is correct), or
+Python's `zipfile` with `Path.as_posix()` names. Note Python's `ZipInfo`
+silently rewrites `os.sep` to `/` when WRITING, so you cannot reproduce the
+bad archive with `writestr` -- flip the separators on the ZipInfo objects
+after opening if you need to test this path.
+
+**CodeBuild runs buildspec commands with `/bin/sh`, not bash.** On the
+Ubuntu standard images `/bin/sh` is dash, which has no `pipefail`, so a
+block opening `set -euo pipefail` dies immediately with
+
+    script.sh: 4: set: Illegal option -o pipefail
+
+and the phase fails in seconds having done nothing -- which reads like a
+broken bundle, not a broken shell. Put `shell: bash` under `env:` in the
+buildspec (buildspec 0.2 supports it) if you use any bashism at all.
+
+Note `bash -n` on the script locally does NOT catch this: it checks bash
+syntax using bash. The only shell that matters is the one CodeBuild picks,
+and it is not the one you tested with.
+
+**A presigned S3 PUT that works with curl and 403s in a browser is a
+signature-version problem.** boto3's default for `generate_presigned_url`
+against the global S3 endpoint is legacy SigV2, which folds `Content-Type`
+into the string-to-sign. Browsers always send a Content-Type for a File
+(Chrome picks `application/x-zip-compressed` for a .zip); the presigner
+signed an empty one; S3 answers 403 `SignatureDoesNotMatch`. curl sends no
+Content-Type, so the identical URL returns 200 from a terminal and the bug
+looks like it is in the front end.
+
+Build the client with `Config(signature_version="s3v4")`: SigV4 signs only
+`host`, so the browser's Content-Type is irrelevant. `Boto3Uploads.presign`
+now refuses to return a non-SigV4 URL rather than hand out one that will
+fail. Both facts are covered by tests in `tests/test_provision.py`.
+
+**The conditional put on `host` is no longer the same-key mutex.** It was,
+while a host was exactly `<key>.tools.stratevi.com`: two people creating
+`model` at the same moment raced for one partition key and one lost. Since
+hostnames gained a random suffix (2026-09-11) two racers no longer collide —
+both rows get written, both name their resources `shiny-model`, and they end
+up sharing one ECR repository and one ECS service while the second build
+overwrites the first app's image at the same tag, with nothing logged.
+
+`Provisioner._claim_key` now carries that guarantee, right after the reserve
+and before any AWS call. If you change how hostnames or keys are allocated,
+that function is what you have to keep honest — the put will not catch it
+for you. It is also deliberately weaker than the put was (it reads through
+an eventually-consistent Scan); the full fix is a `__key__<key>` guard row
+written in the same `TransactWriteItems` as the app row, deferred to P2b.

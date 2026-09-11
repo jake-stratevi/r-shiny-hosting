@@ -1,8 +1,10 @@
 import type {
   App,
+  AppCostsReport,
   AppPatch,
   AuditPage,
   BuildStatus,
+  CostsReport,
   CreateAppBody,
   Me,
   MenuApp,
@@ -211,6 +213,24 @@ export const api = {
     const qs = params.toString()
     return request<AuditPage>(
       `${API_BASE}/apps/${encodeURIComponent(host)}/audit${qs ? `?${qs}` : ''}`,
+      { signal },
+    )
+  },
+
+  // --- costs ---------------------------------------------------------------
+
+  /**
+   * Per-app awake hours and estimated compute cost, plus the shared overhead
+   * line. Estimates derived from the audit trail, not billed amounts — the
+   * payload carries its own `disclaimer` and the screen shows it.
+   */
+  costs(signal?: AbortSignal): Promise<CostsReport> {
+    return request<CostsReport>(`${API_BASE}/costs`, { signal })
+  },
+
+  appCosts(host: string, signal?: AbortSignal): Promise<AppCostsReport> {
+    return request<AppCostsReport>(
+      `${API_BASE}/apps/${encodeURIComponent(host)}/costs`,
       { signal },
     )
   },

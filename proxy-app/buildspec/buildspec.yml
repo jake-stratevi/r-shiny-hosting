@@ -21,6 +21,17 @@
 version: 0.2
 
 env:
+  # REQUIRED. CodeBuild runs each command with /bin/sh unless told otherwise,
+  # and /bin/sh on the Ubuntu standard image is dash, which has no
+  # `pipefail`. Every block here opens with `set -euo pipefail`, so without
+  # this line the first one dies on line 4 with
+  #   script.sh: 4: set: Illegal option -o pipefail
+  # and the build fails in 37 seconds having done nothing -- which reads
+  # like a broken bundle rather than a broken shell.
+  #
+  # Note `bash -n` locally will NOT catch this: it checks bash syntax with
+  # bash. The shell that matters is the one CodeBuild picks.
+  shell: bash
   variables:
     # Defaults only. StartBuild's environmentVariablesOverride wins.
     R_VERSION: "4.4.1"

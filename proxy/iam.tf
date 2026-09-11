@@ -201,7 +201,7 @@ data "aws_iam_policy_document" "task" {
   statement {
     sid       = "CreateAppServices"
     effect    = "Allow"
-    actions   = ["ecs:CreateService", "ecs:TagResource"]
+    actions   = ["ecs:CreateService"]
     resources = ["*"]
 
     condition {
@@ -209,6 +209,31 @@ data "aws_iam_policy_document" "task" {
       variable = "ecs:cluster"
       values   = [data.aws_ssm_parameter.ecs_cluster_arn.value]
     }
+  }
+
+  # TagResource needs its OWN statement, fenced by resource ARN instead of
+  # by the ecs:cluster condition.
+  #
+  # It was originally folded into CreateAppServices above, under that
+  # condition, and every create then died with
+  #   not authorized to perform: ecs:TagResource ... because no
+  #   identity-based policy allows the ecs:TagResource action
+  # -- after a clean five-minute image build, which is an expensive way to
+  # find out. `ecs:cluster` is not in the request context for TagResource,
+  # so the condition could never be true and the grant denied everything it
+  # appeared to allow. Precisely the trap `iam:PermissionsBoundary` sets on
+  # TagRole/DeleteRole (see CreateAppRolesOnlyWithBoundary below): a
+  # condition key the action does not populate turns Allow into Deny,
+  # silently, while the policy still reads as correct.
+  #
+  # The tag is about money, not tidiness: the platform budget
+  # (platform/monitoring.tf) filters on `user:Project$shiny`, so an untagged
+  # service spends where the alerting cannot see it.
+  statement {
+    sid       = "TagAppResources"
+    effect    = "Allow"
+    actions   = ["ecs:TagResource"]
+    resources = ["arn:aws:ecs:${var.region}:${data.aws_caller_identity.current.account_id}:service/${data.aws_ssm_parameter.ecs_cluster_name.value}/*"]
   }
 
   # --- Step: register the new host's Cognito callback ----------------------

@@ -278,7 +278,12 @@ class Provisioner:
         ``build_failed`` and whatever was created stays for inspection.
         """
         now = int(self._clock())
-        host = spec.host(self._domain)
+        # Minted here, once, and never derived from the key: see
+        # `creation.host_suffix`. The row's `host` IS the suffixed hostname --
+        # nothing else about the app carries the suffix, so the ECR
+        # repository, the task role and the ECS service all stay
+        # `shiny-<key>` and stay readable in the console.
+        host = spec.host(self._domain, creation.host_suffix())
         row = App.create(
             host=host,
             app_key=spec.key,
@@ -314,6 +319,10 @@ class Provisioner:
             extra={"host": host, "app_key": spec.key, "email": email,
                    "cpu": spec.cpu, "memory": spec.memory},
         )
+
+        # Audited above, because the row genuinely exists by now -- but still
+        # before the first AWS call, so a loser provisions nothing.
+        await self._claim_key(row, email)
 
         try:
             repository = await self._repositories.ensure(spec.repository(self._prefix))
@@ -357,6 +366,66 @@ class Provisioner:
         )
 
         return App.create(**{**row.__dict__, **changes})
+
+    async def _claim_key(self, row: App, email: str) -> None:
+        """Confirm this row is the only one holding its ``app_key``.
+
+        Before hostnames gained a random suffix (`creation.host_suffix`), the
+        conditional put above WAS this check: two wizards submitting `model`
+        at the same moment raced for one partition key and exactly one won.
+        With a random suffix the two rows no longer collide, so both would be
+        written -- and both would be named `shiny-model`, sharing one ECR
+        repository, one IAM role and one ECS service, with the second build
+        overwriting the first app's image at the same tag. Silently.
+
+        So the same question is asked again here, after the write rather than
+        during it: read the table back, and if another row already claims this
+        key, decide which of us was first. The tie-break is
+        ``(created_at, host)``, computed from rows every racer can see, so all
+        of them reach the same verdict and exactly one survives -- rather than
+        both politely standing down and nobody getting an app.
+
+        The loser's row is marked ``build_failed`` with the reason on it and
+        has provisioned nothing: this still runs before the first AWS call.
+
+        This is a weaker mutex than the conditional put it replaces --
+        ``apps()`` is a Scan, and a Scan is eventually consistent, so a tight
+        enough race can let both rows through. Restoring the old strength
+        needs a ``__key__<key>`` guard row written in the same transaction as
+        the app row, which is a data-model change and is flagged for Jake
+        rather than smuggled in here.
+        """
+        try:
+            rows = await self._store.apps()
+        except Exception as exc:
+            # A table we cannot read is not evidence of a collision, and the
+            # wizard's check and `_key_problem` have both already passed.
+            # Log it and carry on rather than refusing a legitimate create.
+            self._log.warning(
+                "could not confirm the app key is unique",
+                extra={"host": row.host, "app_key": row.app_key, "reason": str(exc)},
+            )
+            return
+
+        rivals = [
+            other
+            for other in rows
+            if other.app_key == row.app_key and other.host != row.host
+        ]
+        if not rivals:
+            return
+
+        mine = (row.created_at, row.host)
+        if all(mine < (other.created_at, other.host) for other in rivals):
+            return  # we were first; the others resolve the same way and stand down
+
+        await self.fail(
+            row,
+            f"another app already uses the key {row.app_key}",
+            event=audit_mod.EVENT_PROVISION_FAILED,
+            email=email,
+        )
+        raise registry.HostTaken(row.host)
 
     # --- finish ------------------------------------------------------------
 
@@ -576,21 +645,43 @@ class Boto3Uploads:
     differs by a byte gets an opaque 403 that surfaces as a CORS error. The
     size is already refused before this is called, and the build validates
     the bundle for real.
+
+    **The client MUST be configured for signature version s3v4** (see
+    ``__main__``). boto3's default against the global endpoint is the legacy
+    SigV2, which folds Content-Type into the string-to-sign — and a browser
+    always sends one for a File, while the presigner signed an empty value.
+    The result is a 403 SignatureDoesNotMatch that reproduces only in a
+    browser: curl sends no Content-Type, so every command-line check of the
+    same URL returns 200. ``assert_v4`` below refuses to let that ship.
     """
 
     def __init__(self, client: Any, bucket: str) -> None:
         self._client = client
         self._bucket = bucket
 
+    @staticmethod
+    def assert_v4(url: str) -> None:
+        """Raise unless this URL is SigV4. Cheap insurance against a
+        one-word config change that only breaks in browsers."""
+        if "X-Amz-Algorithm=AWS4-HMAC-SHA256" not in url:
+            raise ProvisionError(
+                "the uploads client is not signing with SigV4 — a browser's "
+                "Content-Type will make S3 reject the PUT with 403; "
+                "construct the s3 client with "
+                'Config(signature_version="s3v4")'
+            )
+
     def new_key(self) -> str:
         return f"uploads/{uuid.uuid4()}.zip"
 
     def presign(self, key: str) -> str:
-        return self._client.generate_presigned_url(
+        url = self._client.generate_presigned_url(
             "put_object",
             Params={"Bucket": self._bucket, "Key": key},
             ExpiresIn=UPLOAD_URL_SECONDS,
         )
+        self.assert_v4(url)
+        return url
 
 
 class Boto3Repositories:

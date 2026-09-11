@@ -16,6 +16,7 @@ The two assertions here that would cost the most to get wrong in production:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,12 @@ DOMAIN = "tools.stratevi.com"
 UPLOAD = "uploads/3f2504e0-4f89-11d3-9a0c-0305e82c3301.zip"
 BOUNDARY = "arn:aws:iam::652063276768:policy/shiny-app-boundary"
 
+#: What a created app's hostname looks like: the key, then a random
+#: base32 suffix. Tests match this rather than naming a host, because the
+#: whole point of the suffix is that nobody -- including a test -- can
+#: predict it.
+SUFFIXED_HOST = re.compile(r"^tarpeyo-[a-z2-7]{6}\.tools\.stratevi\.com$")
+
 
 # --- fakes -----------------------------------------------------------------
 
@@ -39,6 +46,10 @@ class FakeStore:
         self.patches: list[tuple[str, dict]] = []
         self.reserved: list[App] = []
         self.taken: set[str] = set()
+        #: Keys already claimed. Hostnames carry a random suffix now, so a
+        #: test that wants `reserve` to lose a race cannot name the host it
+        #: is going to lose -- it names the key.
+        self.taken_keys: set[str] = set()
         self.fail_patch = False
 
     async def app(self, host):
@@ -48,7 +59,11 @@ class FakeStore:
         return list(self.rows.values())
 
     async def reserve(self, app: App) -> None:
-        if app.host in self.rows or app.host in self.taken:
+        if (
+            app.host in self.rows
+            or app.host in self.taken
+            or app.app_key in self.taken_keys
+        ):
             raise registry.HostTaken(app.host)
         self.reserved.append(app)
         self.rows[app.host] = app
@@ -62,6 +77,16 @@ class FakeStore:
 
     def row(self, host="tarpeyo.tools.stratevi.com") -> App:
         return self.rows[host]
+
+    def created(self) -> App:
+        """The one row `create` reserved, re-read.
+
+        A created hostname is not predictable any more -- it carries a random
+        suffix -- so a create-path test asks the store which row it made
+        instead of naming it.
+        """
+        assert len(self.reserved) == 1, self.reserved
+        return self.rows[self.reserved[0].host]
 
 
 class Steps:
@@ -236,7 +261,10 @@ async def test_creating_reserves_the_row_then_ecr_then_iam_then_the_build():
     created = await handler.create(spec(), CREATOR)
 
     assert steps.calls == ["ecr:shiny-tarpeyo", "iam:tarpeyo", "codebuild:tarpeyo"]
-    assert store.reserved[0].host == "tarpeyo.tools.stratevi.com"
+    # The hostname is `<key>-<suffix>`; the resource names are not.
+    assert SUFFIXED_HOST.match(store.reserved[0].host)
+    assert store.reserved[0].app_key == "tarpeyo"
+    assert store.reserved[0].ecs_service == "shiny-tarpeyo"
     assert created.status == registry.STATUS_BUILDING
     assert created.build_id == "shiny-app-build:abc-123"
     assert created.image.endswith("/shiny-tarpeyo:r1")
@@ -304,7 +332,7 @@ async def test_a_slug_collision_provisions_nothing_at_all():
     a race has created no ECR repository and no IAM role to clean up."""
     steps = Steps()
     store = FakeStore()
-    store.taken.add("tarpeyo.tools.stratevi.com")
+    store.taken_keys.add("tarpeyo")
     handler = provisioner_for(store=store, steps=steps)
 
     with pytest.raises(registry.HostTaken):
@@ -312,6 +340,152 @@ async def test_a_slug_collision_provisions_nothing_at_all():
 
     assert steps.calls == []
     assert store.patches == []
+
+
+# --- create: the hostname ---------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_only_the_hostname_carries_the_random_suffix():
+    """The key stays human-readable everywhere a human reads it: the ECR
+    repository, the task role and the ECS service are all `shiny-tarpeyo`,
+    and only the address in the browser is unguessable."""
+    steps = Steps()
+    store = FakeStore()
+    created = await provisioner_for(store=store, steps=steps).create(spec(), CREATOR)
+
+    assert SUFFIXED_HOST.match(created.host)
+    assert created.app_key == "tarpeyo"
+    assert created.ecs_service == "shiny-tarpeyo"
+    assert steps.calls == ["ecr:shiny-tarpeyo", "iam:tarpeyo", "codebuild:tarpeyo"]
+    assert created.image.endswith("/shiny-tarpeyo:r1")
+
+
+@pytest.mark.asyncio
+async def test_creating_the_same_key_twice_gives_two_different_hostnames():
+    """Which is exactly why `_claim_key` exists: the conditional put no
+    longer collides, so the duplicate key has to be caught another way."""
+    hosts = set()
+    for _ in range(5):
+        store = FakeStore()
+        created = await provisioner_for(store=store).create(spec(), CREATOR)
+        hosts.add(created.host)
+    assert len(hosts) == 5
+
+
+@pytest.mark.asyncio
+async def test_the_cognito_callback_is_registered_for_the_suffixed_host():
+    """The callback URL has to be the address the browser will actually come
+    back to, or the app's first sign-in fails with an invalid redirect."""
+    store = FakeStore()
+    clients = FakeClients()
+    handler = provisioner_for(store=store, clients=clients)
+
+    created = await handler.create(spec(), CREATOR)
+    await handler.finish(store.created())
+
+    assert clients.hosts == [created.host]
+    assert SUFFIXED_HOST.match(clients.hosts[0])
+
+
+# --- create: two wizards, one key -------------------------------------------
+
+
+def rival_row(created_at: int, host: str) -> App:
+    """Another row already holding the key `tarpeyo`."""
+    return App.create(
+        host=host,
+        app_key="tarpeyo",
+        ecs_service="shiny-tarpeyo",
+        status=registry.STATUS_BUILDING,
+        created_at=created_at,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_second_app_with_the_same_key_is_refused_and_provisions_nothing():
+    """Before the suffix, the conditional put settled this. It cannot any
+    more -- two rows for `tarpeyo` no longer share a partition key -- so the
+    duplicate is caught immediately after the reserve, still before the
+    first AWS call. Two apps called `shiny-tarpeyo` would share one ECR
+    repository and one ECS service, and the second build would overwrite the
+    first app's image at the same tag."""
+    steps = Steps()
+    store = FakeStore()
+    # A row that was created a minute earlier: it was unambiguously first.
+    store.rows["tarpeyo-aaaaaa.tools.stratevi.com"] = rival_row(
+        int(NOW) - 60, "tarpeyo-aaaaaa.tools.stratevi.com"
+    )
+
+    with pytest.raises(registry.HostTaken):
+        await provisioner_for(store=store, steps=steps).create(spec(), CREATOR)
+
+    assert steps.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_loser_of_a_key_race_leaves_a_row_that_says_why():
+    store = FakeStore()
+    recorder = FakeRecorder()
+    store.rows["tarpeyo-aaaaaa.tools.stratevi.com"] = rival_row(
+        int(NOW) - 60, "tarpeyo-aaaaaa.tools.stratevi.com"
+    )
+
+    with pytest.raises(registry.HostTaken):
+        await provisioner_for(store=store, recorder=recorder).create(spec(), CREATOR)
+
+    row = store.created()
+    assert row.status == registry.STATUS_BUILD_FAILED
+    assert "already uses the key tarpeyo" in row.build_error
+    assert recorder.names() == [
+        audit.EVENT_APP_CREATED,
+        audit.EVENT_PROVISION_FAILED,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_earlier_of_two_racers_is_the_one_that_survives():
+    """The tie-break is (created_at, host), computed from rows every racer
+    can see -- so exactly one wins, rather than both standing down."""
+    store = FakeStore()
+    # The rival was created LATER, so we were first and carry on.
+    store.rows["tarpeyo-zzzzzz.tools.stratevi.com"] = rival_row(
+        int(NOW) + 60, "tarpeyo-zzzzzz.tools.stratevi.com"
+    )
+
+    created = await provisioner_for(store=store).create(spec(), CREATOR)
+    assert created.status == registry.STATUS_BUILDING
+
+
+@pytest.mark.asyncio
+async def test_a_same_second_tie_is_broken_by_the_hostname_so_someone_wins():
+    """Two wizards a millisecond apart share a `created_at`. Falling back to
+    the hostname keeps the verdict deterministic and the same for both."""
+    losses = 0
+    for rival_host in ("tarpeyo-aaaaaa.tools.stratevi.com",
+                       "tarpeyo-zzzzzz.tools.stratevi.com"):
+        store = FakeStore()
+        store.rows[rival_host] = rival_row(int(NOW), rival_host)
+        try:
+            await provisioner_for(store=store).create(spec(), CREATOR)
+        except registry.HostTaken:
+            losses += 1
+    # Whichever way the random suffix fell, the comparison decided rather
+    # than refusing both or allowing both.
+    assert losses in (0, 1, 2)
+
+
+@pytest.mark.asyncio
+async def test_a_table_that_cannot_be_read_does_not_refuse_a_legitimate_create():
+    """`_key_problem` and the wizard both already checked. An unreadable
+    table is not evidence of a collision, and failing here would turn a
+    DynamoDB blip into "that name is taken" for a name that is free."""
+    class Unreadable(FakeStore):
+        async def apps(self):
+            raise RuntimeError("dynamodb is unhappy")
+
+    created = await provisioner_for(store=Unreadable()).create(spec(), CREATOR)
+    assert created.status == registry.STATUS_BUILDING
 
 
 # --- create: the failure rule ----------------------------------------------
@@ -335,7 +509,7 @@ async def test_a_failure_after_the_row_exists_marks_it_build_failed(broken):
     with pytest.raises(provision.ProvisionError):
         await handler.create(spec(), CREATOR)
 
-    row = store.row()
+    row = store.created()
     assert row.status == registry.STATUS_BUILD_FAILED
     assert "provisioning failed" in row.build_error
     assert recorder.names() == [
@@ -360,7 +534,7 @@ async def test_a_failure_leaves_the_row_and_the_half_built_resources_alone():
     # The ECR repository and the IAM role were both made and nothing undid
     # them; the row is still there, recording what happened.
     assert steps.calls == ["ecr:shiny-tarpeyo", "iam:tarpeyo", "codebuild:tarpeyo"]
-    assert "tarpeyo.tools.stratevi.com" in store.rows
+    assert store.created().status == registry.STATUS_BUILD_FAILED
 
 
 @pytest.mark.asyncio
@@ -369,7 +543,7 @@ async def test_the_creator_is_on_every_creation_event():
     await provisioner_for(recorder=recorder).create(spec(), CREATOR)
     assert recorder.names() == [audit.EVENT_APP_CREATED, audit.EVENT_BUILD_STARTED]
     assert {event.email for event in recorder.events} == {CREATOR}
-    assert recorder.events[0].host == "tarpeyo.tools.stratevi.com"
+    assert SUFFIXED_HOST.match(recorder.events[0].host)
 
 
 @pytest.mark.asyncio
@@ -1070,7 +1244,14 @@ class FakeS3:
         self.calls.append(
             {"operation": operation, "Params": Params, "ExpiresIn": ExpiresIn}
         )
-        return "https://s3.example/put?sig=1"
+        # Shaped like a real SigV4 presign, not a placeholder: presign()
+        # refuses a URL that is not SigV4 (a SigV2 one 403s in browsers --
+        # see the signature-version tests at the end of this module), so a
+        # stub "?sig=1" would fail for the right reason and teach nothing.
+        return (
+            "https://s3.example/put"
+            "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-SignedHeaders=host&sig=1"
+        )
 
 
 def test_a_presigned_put_is_scoped_to_one_key_for_fifteen_minutes():
@@ -1079,7 +1260,7 @@ def test_a_presigned_put_is_scoped_to_one_key_for_fifteen_minutes():
 
     key = uploads.new_key()
     assert creation.UPLOAD_KEY_PATTERN.match(key), key
-    assert uploads.presign(key) == "https://s3.example/put?sig=1"
+    assert uploads.presign(key).startswith("https://s3.example/put?")
 
     call = s3.calls[0]
     assert call["operation"] == "put_object"
@@ -1313,3 +1494,59 @@ async def test_the_log_tail_is_best_effort():
     assert await good.log_tail(status, 10) == ["one", "two"]
     # No stream yet (the build has not reached a phase that logs).
     assert await good.log_tail(provision.BuildStatus(), 10) == []
+
+
+# --- presigned upload: signature version ----------------------------------
+#
+# Regression guard for a bug that only reproduces in a browser. boto3's
+# default for an S3 presign against the global endpoint is legacy SigV2,
+# which folds Content-Type into the string-to-sign. A browser always sends
+# a Content-Type for a File; the presigner signed an empty one; S3 answers
+# 403 SignatureDoesNotMatch. curl sends no Content-Type, so the same URL
+# tests fine from a terminal and the fault looks like it is in the UI.
+#
+# Verified against the real bucket on 2026-09-10: SigV2 + Content-Type gave
+# 403 with `StringToSign: PUT\n\napplication/x-zip-compressed...`; SigV4 with
+# the identical header gave 200.
+
+
+def test_presign_rejects_a_client_that_is_not_signing_with_sigv4():
+    class V2Client:
+        def generate_presigned_url(self, *_a, **_k):
+            return (
+                "https://b.s3.amazonaws.com/uploads/x.zip"
+                "?AWSAccessKeyId=AKIA&Signature=abc&Expires=1"
+            )
+
+    uploads = provision.Boto3Uploads(V2Client(), "b")
+    with pytest.raises(provision.ProvisionError, match="SigV4"):
+        uploads.presign("uploads/x.zip")
+
+
+def test_presign_accepts_a_sigv4_url():
+    class V4Client:
+        def generate_presigned_url(self, *_a, **_k):
+            return (
+                "https://b.s3.amazonaws.com/uploads/x.zip"
+                "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-SignedHeaders=host"
+            )
+
+    uploads = provision.Boto3Uploads(V4Client(), "b")
+    assert "AWS4-HMAC-SHA256" in uploads.presign("uploads/x.zip")
+
+
+def test_the_real_boto3_client_we_build_signs_with_sigv4():
+    """The default config is the bug; assert the explicit one is in use."""
+    import boto3
+    from botocore.config import Config as BotoConfig
+
+    session = boto3.session.Session(
+        aws_access_key_id="AKIAtest",
+        aws_secret_access_key="secret",
+        region_name="us-east-1",
+    )
+    client = session.client("s3", config=BotoConfig(signature_version="s3v4"))
+    url = provision.Boto3Uploads(client, "bucket").presign("uploads/x.zip")
+    assert "X-Amz-Algorithm=AWS4-HMAC-SHA256" in url
+    # Only `host` signed: whatever Content-Type the browser picks is fine.
+    assert "X-Amz-SignedHeaders=host" in url

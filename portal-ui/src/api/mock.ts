@@ -210,8 +210,33 @@ export async function mockFetch(url: string, init: RequestInit = {}): Promise<Re
     })
   }
 
-  if (pathname.startsWith('/api/v1/apps')) {
+  if (pathname.startsWith('/api/v1/apps') || pathname === '/api/v1/costs') {
     if (!me.is_admin) return fail(403, 'Admin access is required.')
+  }
+
+  if (pathname === '/api/v1/costs') {
+    if (method !== 'GET') return fail(405, 'Method not allowed.')
+    const { mockCosts } = await import('./mockCosts')
+    return json(mockCosts(state))
+  }
+
+  const costsMatch = pathname.match(/^\/api\/v1\/apps\/([^/]+)\/costs$/)
+  if (costsMatch) {
+    if (method !== 'GET') return fail(405, 'Method not allowed.')
+    const host = decodeURIComponent(costsMatch[1])
+    const app = state.find((a) => a.host === host)
+    if (!app) return fail(404, 'No such application.')
+    const { mockCosts } = await import('./mockCosts')
+    const report = mockCosts([app])
+    return json({
+      currency: report.currency,
+      basis: report.basis,
+      generated_at: report.generated_at,
+      rates: report.rates,
+      disclaimer: report.disclaimer,
+      month_to_date: report.month_to_date.apps[0],
+      previous_month: report.previous_month.apps[0],
+    })
   }
 
   if (pathname === '/api/v1/apps') return json({ apps: state })
@@ -335,7 +360,29 @@ const RESERVED_KEYS = [
  */
 const KEY_DENYLIST = ['tarpeyo', 'nefecon', 'travere', 'calliditas']
 
-function validateKey(raw: string): { ok: boolean; host?: string; reason?: string } {
+/** The suffix length the real API reports. Mirrors creation.HOST_SUFFIX_CHARS. */
+const SUFFIX_CHARS = 6
+
+/** Lowercased base32 — the alphabet `creation.host_suffix` draws from. */
+const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567'
+
+/**
+ * A created app's hostname is `<key>-<random>`; the random half is minted on
+ * the server at create time so an app cannot be found by guessing its name.
+ * The mock mints one the same way (crypto, not Math.random) so mock mode
+ * exercises the same shape the real API produces.
+ */
+function hostSuffix(): string {
+  const drawn = crypto.getRandomValues(new Uint8Array(SUFFIX_CHARS))
+  return Array.from(drawn, (n) => SUFFIX_ALPHABET[n % SUFFIX_ALPHABET.length]).join('')
+}
+
+function validateKey(raw: string): {
+  ok: boolean
+  host_preview?: string
+  suffix_chars?: number
+  reason?: string
+} {
   const key = raw.trim().toLowerCase()
 
   if (key.length < KEY_MIN_LENGTH || key.length > KEY_MAX_LENGTH) {
@@ -363,7 +410,13 @@ function validateKey(raw: string): { ok: boolean; host?: string; reason?: string
   if (state.some((a) => a.app_key === key)) {
     return { ok: false, reason: `An app already uses the key “${key}”.` }
   }
-  return { ok: true, host: `${key}.tools.stratevi.com` }
+  // The SHAPE, not a hostname: this route reserves nothing, so any suffix it
+  // returned would not be the one the app gets. See portal.py's _validate_key.
+  return {
+    ok: true,
+    host_preview: `${key}-${'x'.repeat(SUFFIX_CHARS)}.tools.stratevi.com`,
+    suffix_chars: SUFFIX_CHARS,
+  }
 }
 
 let failNext = false
@@ -410,7 +463,7 @@ async function createApp(init: RequestInit): Promise<Response> {
   )
   if (!size) return fail(400, 'cpu/memory must be one of the two allowed sizes.')
 
-  const host = verdict.host as string
+  const host = `${key}-${hostSuffix()}.tools.stratevi.com`
   const app: App = {
     host,
     app_key: key,

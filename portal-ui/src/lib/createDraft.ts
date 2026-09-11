@@ -37,13 +37,40 @@ export type KeyCheckState = 'idle' | 'checking' | 'ok' | 'rejected' | 'unknown'
 
 export interface KeyCheck {
   state: KeyCheckState
-  /** The hostname the API says the key resolves to, once it says `ok`. */
-  host: string | null
+  /**
+   * The hostname SHAPE the API says this key produces, once it says `ok` —
+   * `<key>-xxxxxx.tools.stratevi.com`. Not a hostname: the real suffix is
+   * random and is minted when the app is created, which is the whole point
+   * of it. See `ValidateKeyResult.host_preview`.
+   */
+  hostPreview: string | null
+  /** How many characters the real suffix will have, per the API. */
+  suffixChars: number | null
   /** The API's own rejection text, shown verbatim. */
   reason: string | null
 }
 
-export const IDLE_KEY_CHECK: KeyCheck = { state: 'idle', host: null, reason: null }
+export const IDLE_KEY_CHECK: KeyCheck = {
+  state: 'idle',
+  hostPreview: null,
+  suffixChars: null,
+  reason: null,
+}
+
+/** How many characters the suffix has when the API has not said. */
+export const DEFAULT_SUFFIX_CHARS = 6
+
+/**
+ * The hostname shape to show before the API has answered — same spelling
+ * the server produces, so the callout does not rewrite itself when the check
+ * lands. Only the key changes; the placeholder and the domain do not.
+ */
+export function localHostPreview(
+  key: string,
+  suffixChars = DEFAULT_SUFFIX_CHARS,
+): string {
+  return `${key.trim()}-${'x'.repeat(suffixChars)}.tools.stratevi.com`
+}
 
 /**
  * Where the zip is in its journey to S3. `inspecting` comes FIRST: the

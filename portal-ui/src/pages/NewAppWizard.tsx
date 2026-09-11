@@ -33,16 +33,19 @@ import {
 import { InlineError, Notice, PageHeader, SectionCard } from '../components/states'
 import { useKeyAvailability } from '../hooks/useKeyAvailability'
 import {
+  DEFAULT_SUFFIX_CHARS,
   WIZARD_STEPS,
   checkZip,
   emptyDraft,
   humanSize,
+  localHostPreview,
   packagesFrom,
   stepBlocker,
   stepIndex,
   suggestKey,
   toCreateBody,
   type CreateDraft,
+  type KeyCheck,
   type StepId,
 } from '../lib/createDraft'
 import { InspectionError, inspectBundle, sourceLabel } from '../lib/inspectBundle'
@@ -147,7 +150,7 @@ export function NewAppWizard() {
       {step === 'access' ? <AccessStep draft={draft} patch={patch} /> : null}
       {step === 'expiry' ? <ExpiryStep draft={draft} patch={patch} /> : null}
       {step === 'review' ? (
-        <ReviewStep draft={draft} host={keyCheck.host} onEdit={(id) => goto(stepIndex(id))} />
+        <ReviewStep draft={draft} keyCheck={keyCheck} onEdit={(id) => goto(stepIndex(id))} />
       ) : null}
 
       {submitError ? (
@@ -263,13 +266,17 @@ function DetailsStep({
           <KeyVerdict check={keyCheck} typed={draft.key.trim() !== ''} />
         </div>
 
-        {/* The payoff, visible from the first keystroke. Shown from the typed
-            key while the check is in flight, then from the host the API
-            confirms — which is the authority on the domain. A refused key
-            gets no callout: that link is not going to be yours. */}
+        {/* The payoff, visible from the first keystroke. Built from the typed
+            key while the check is in flight, then from the shape the API
+            confirms — which is the authority on the domain and on how long
+            the random suffix is. A refused key gets no callout: that address
+            is not going to be yours. */}
         {draft.key.trim() !== '' && keyCheck.state !== 'rejected' ? (
           <div className="mt-3 max-w-md">
-            <LinkCallout url={`https://${keyCheck.host ?? `${draft.key.trim()}.tools.stratevi.com`}`} />
+            <HostPreviewCallout
+              preview={keyCheck.hostPreview ?? localHostPreview(draft.key)}
+              suffixChars={keyCheck.suffixChars ?? DEFAULT_SUFFIX_CHARS}
+            />
           </div>
         ) : null}
       </Field>
@@ -841,11 +848,11 @@ function ExpiryStep({
 
 function ReviewStep({
   draft,
-  host,
+  keyCheck,
   onEdit,
 }: {
   draft: CreateDraft
-  host: string | null
+  keyCheck: KeyCheck
   onEdit: (step: StepId) => void
 }) {
   const size = taskSize(draft.size)
@@ -859,9 +866,13 @@ function ReviewStep({
       description="Creating reserves the key, provisions the app's own repository and role, and starts the build. Everything below can be changed afterwards except the key."
     >
       <div className="space-y-5 px-5 py-5">
-        {/* The link is what all of this is for, so it gets top billing —
-            in the same callout the Details step showed it in. */}
-        <LinkCallout url={`https://${host ?? `${draft.key}.tools.stratevi.com`}`} />
+        {/* The address is what all of this is for, so it gets top billing —
+            in the same callout the Details step showed it in, random suffix
+            still unminted and still saying so. */}
+        <HostPreviewCallout
+          preview={keyCheck.hostPreview ?? localHostPreview(draft.key)}
+          suffixChars={keyCheck.suffixChars ?? DEFAULT_SUFFIX_CHARS}
+        />
 
         <ReviewGroup title="Details" onEdit={() => onEdit('details')}>
           <ReviewRow term="Label" value={draft.label} />
@@ -1045,11 +1056,52 @@ function Field({
  * caption — their `Create.vue` shows it from the first keystroke, and the
  * review step restates it in the same shape.
  */
-function LinkCallout({ url }: { url: string }) {
+/**
+ * The address the app will get — shown honestly, which means showing that
+ * part of it does not exist yet.
+ *
+ * A created app lives at `<key>-<random>.tools.stratevi.com`. The random
+ * half is minted on the server when the app is created, so that someone who
+ * is not on the platform cannot find an app by guessing its name. (It is
+ * defence in depth: a guesser is refused by the access list anyway.)
+ *
+ * That means this callout CANNOT show the real link, and must not pretend
+ * to: the suffix does not exist until Create is pressed. So it shows the
+ * shape with the random part marked as such, says in one line where the
+ * rest comes from, and is deliberately not a clickable link. The real
+ * address — clickable — is on the build screen straight afterwards.
+ */
+function HostPreviewCallout({
+  preview,
+  suffixChars,
+}: {
+  preview: string
+  suffixChars: number
+}) {
+  const [label, ...domain] = preview.split('.')
+  const placeholder = 'x'.repeat(suffixChars)
+  const stem = label.endsWith(`-${placeholder}`)
+    ? label.slice(0, -placeholder.length)
+    : `${label}-`
+
   return (
     <div className="rounded-lg border border-azure/30 bg-azure/[0.07] px-3.5 py-2.5 dark:border-azure/25 dark:bg-azure/10">
-      <p className="text-xs text-azure">Your app’s link</p>
-      <p className="scroll-x-thin whitespace-nowrap font-mono text-sm text-foreground">{url}</p>
+      <p className="text-xs text-azure">Your app’s address</p>
+      <p className="scroll-x-thin whitespace-nowrap font-mono text-sm text-foreground">
+        https://{stem}
+        <span
+          className="rounded-sm bg-azure/20 px-0.5 text-muted-foreground"
+          title="A random suffix, added when the app is created"
+        >
+          {placeholder}
+        </span>
+        .{domain.join('.')}
+      </p>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        The last {suffixChars} characters are random and are added when you
+        create the app, so the address can’t be guessed by anyone who wasn’t
+        sent it. You’ll get the real link on the next screen.
+      </p>
     </div>
   )
 }

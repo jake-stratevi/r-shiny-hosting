@@ -63,7 +63,13 @@ beforeEach(() => {
   for (const mock of [validateKey, createUpload, createApp, uploadToS3]) {
     mock.mockReset()
   }
-  validateKey.mockResolvedValue({ ok: true, host: 'access-atlas.tools.stratevi.com' })
+  validateKey.mockResolvedValue({
+    ok: true,
+    // The SHAPE, not a hostname: the real suffix is minted server-side on
+    // create, so the wizard can only ever show where it will go.
+    host_preview: 'access-atlas-xxxxxx.tools.stratevi.com',
+    suffix_chars: 6,
+  })
   createUpload.mockResolvedValue({
     upload_key: 'uploads/abc.zip',
     url: 'https://s3.example/presigned',
@@ -76,12 +82,30 @@ beforeEach(() => {
     },
   )
   createApp.mockResolvedValue({
-    host: 'access-atlas.tools.stratevi.com',
+    // What the API actually returns: the suffixed, unguessable hostname.
+    host: 'access-atlas-k4mr2t.tools.stratevi.com',
     status: 'building',
   })
 })
 
 const continueButton = () => screen.getByRole('button', { name: /Continue/ })
+
+/**
+ * The address line in the callout. It is deliberately not one text node --
+ * the random part is marked up separately so the user can see which half of
+ * the hostname does not exist yet -- so it is matched on textContent.
+ */
+const addressLine = (address: string) =>
+  screen.findByText(
+    (_content, element) =>
+      element?.tagName === 'P' && element.textContent === address,
+  )
+
+const queryAddressLine = (address: string) =>
+  screen.queryByText(
+    (_content, element) =>
+      element?.tagName === 'P' && element.textContent === address,
+  )
 
 /**
  * The blocker line under the card. The key field can raise an alert of its
@@ -117,18 +141,33 @@ describe('NewAppWizard — key availability', () => {
     expect(validateKey).toHaveBeenCalledWith('atlas', expect.anything())
   })
 
-  it('shows the link the key resolves to, in the callout, from the first keystroke', async () => {
+  it('shows the address the key will produce, suffix and all, from the first keystroke', async () => {
     const user = userEvent.setup()
     renderWizard()
 
     await user.type(screen.getByLabelText('Key'), 'access-atlas')
 
     // Projected from what has been typed while the check is still in flight…
-    expect(screen.getByText('Your app’s link')).toBeInTheDocument()
-    // …then confirmed against the host the API returns.
+    expect(screen.getByText('Your app’s address')).toBeInTheDocument()
+    // …then confirmed against the shape the API returns. The `xxxxxx` is the
+    // honest part: that half of the hostname does not exist yet.
     expect(
-      await screen.findByText('https://access-atlas.tools.stratevi.com'),
+      await addressLine('https://access-atlas-xxxxxx.tools.stratevi.com'),
     ).toBeInTheDocument()
+  })
+
+  it('tells the user the suffix is random and added on create', async () => {
+    // Otherwise `xxxxxx` reads as a bug rather than as the security control
+    // it is -- and the user would expect to be able to share this address.
+    const user = userEvent.setup()
+    renderWizard()
+
+    await user.type(screen.getByLabelText('Key'), 'access-atlas')
+
+    expect(
+      await screen.findByText(/random and are added when you create the app/),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/can’t be guessed/)).toBeInTheDocument()
   })
 
   it('drops a stale verdict the moment the key changes again', async () => {
@@ -147,7 +186,7 @@ describe('NewAppWizard — key availability', () => {
       expect(screen.queryByText('That key is available.')).not.toBeInTheDocument(),
     )
     expect(
-      screen.queryByText('https://access-atlas.tools.stratevi.com'),
+      queryAddressLine('https://access-atlas-xxxxxx.tools.stratevi.com'),
     ).not.toBeInTheDocument()
     expect(await screen.findByText('Taken.')).toBeInTheDocument()
   })
@@ -419,9 +458,9 @@ describe('NewAppWizard — create', () => {
     await user.click(await screen.findByRole('button', { name: 'Never expires' }))
     await user.click(continueButton())
 
-    // The review restates the link and every choice.
+    // The review restates the address and every choice.
     expect(
-      await screen.findByText('https://access-atlas.tools.stratevi.com'),
+      await addressLine('https://access-atlas-xxxxxx.tools.stratevi.com'),
     ).toBeInTheDocument()
     expect(screen.getByText('shiny, dplyr')).toBeInTheDocument()
     expect(screen.getByText('Everyone signed in')).toBeInTheDocument()

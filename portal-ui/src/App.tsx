@@ -12,6 +12,7 @@ import { useResource } from './hooks/useResource'
 import { MeContext, useMe } from './lib/meContext'
 import { AdminAppDetailPage } from './pages/AdminAppDetailPage'
 import { AdminAppsPage } from './pages/AdminAppsPage'
+import { CostsPage } from './pages/CostsPage'
 import { BuildPage } from './pages/BuildPage'
 import { MenuPage } from './pages/MenuPage'
 import { NewAppWizard } from './pages/NewAppWizard'
@@ -78,6 +79,15 @@ export default function App() {
             element={
               <RequireAdmin>
                 <AdminAppsPage />
+              </RequireAdmin>
+            }
+          />
+          {/* Before /admin/apps/:host: "costs" is a screen, not a hostname. */}
+          <Route
+            path="/admin/costs"
+            element={
+              <RequireAdmin>
+                <CostsPage />
               </RequireAdmin>
             }
           />
