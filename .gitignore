@@ -5,6 +5,8 @@
 *.tfstate.*
 *.tfplan
 plan.txt
+p.txt
+apply.txt
 state-before.txt
 state-after.txt
 .build/
