@@ -1,0 +1,74 @@
+[
+  {
+    "file": "form-logo-dark.svg",
+    "category": "FORM_LOGO",
+    "colorMode": "DARK",
+    "extension": "SVG",
+    "element": "Brand lockup + tagline above the sign-in card"
+  },
+  {
+    "file": "form-logo-light.svg",
+    "category": "FORM_LOGO",
+    "colorMode": "LIGHT",
+    "extension": "SVG",
+    "element": "Same, for light mode"
+  },
+  {
+    "file": "footer-logo-dark.svg",
+    "category": "PAGE_FOOTER_LOGO",
+    "colorMode": "DARK",
+    "extension": "SVG",
+    "element": "Muted corporate lockup in the page footer"
+  },
+  {
+    "file": "footer-logo-light.svg",
+    "category": "PAGE_FOOTER_LOGO",
+    "colorMode": "LIGHT",
+    "extension": "SVG",
+    "element": "Same, for light mode"
+  },
+  {
+    "file": "favicon-dark.svg",
+    "category": "FAVICON_SVG",
+    "colorMode": "DARK",
+    "extension": "SVG",
+    "element": "Browser tab icon (modern browsers)"
+  },
+  {
+    "file": "favicon-light.svg",
+    "category": "FAVICON_SVG",
+    "colorMode": "LIGHT",
+    "extension": "SVG",
+    "element": "Same, for light mode"
+  },
+  {
+    "file": "favicon-dark.ico",
+    "category": "FAVICON_ICO",
+    "colorMode": "DARK",
+    "extension": "ICO",
+    "element": "Browser tab icon (legacy / bookmark)"
+  },
+  {
+    "file": "favicon-light.ico",
+    "category": "FAVICON_ICO",
+    "colorMode": "LIGHT",
+    "extension": "ICO",
+    "element": "Same, for light mode"
+  },
+  {
+    "file": "idp-microsoft365-dark.svg",
+    "category": "IDP_BUTTON_ICON",
+    "colorMode": "DARK",
+    "extension": "SVG",
+    "resourceId": "Microsoft365",
+    "element": "Icon inside the \"Sign in with Microsoft365\" button"
+  },
+  {
+    "file": "idp-microsoft365-light.svg",
+    "category": "IDP_BUTTON_ICON",
+    "colorMode": "LIGHT",
+    "extension": "SVG",
+    "resourceId": "Microsoft365",
+    "element": "Same, for light mode"
+  }
+]

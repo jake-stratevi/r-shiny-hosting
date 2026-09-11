@@ -1,0 +1,109 @@
+<!doctype html>
+<!--
+  A LOCAL APPROXIMATION of the branded sign-in page, for reviewing the design
+  before anyone runs apply.ps1. Open it in a browser straight off disk.
+
+  It pulls the real asset files out of ./assets and uses the exact colour
+  values from ./settings.json, so the palette and the imagery are truthful.
+  Everything else -- typography, spacing, the shape of the controls, the
+  wording -- is Cognito's and is only sketched here. Do not treat pixel
+  positions as a promise.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stratevi managed login - preview</title>
+<style>
+  :root{
+    --navy:#0C111B; --card:#283340; --card-border:#3A4757;
+    --heading:#F2F5F8; --body:#C2CCD9; --desc:#9BA9BC; --label:#E6ECF3;
+    --input-bg:#1E2732; --input-border:#45525F; --placeholder:#8494A6;
+    --teal:#57C4C5; --blue:#40C4DF; --accent:#74A3D7;
+    --outline:#4A5765; --divider:#3A4757; --footer-border:#232C39;
+    --radius:8px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; min-height:100vh; background:var(--navy); color:var(--body);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    display:flex; flex-direction:column;
+  }
+  .page{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:48px 16px}
+  .logo{width:280px; height:70px; margin-bottom:22px}
+  .card{
+    width:min(420px,100%); background:var(--card); border:1px solid var(--card-border);
+    border-radius:var(--radius); padding:28px;
+  }
+  h1{margin:0 0 4px; font-size:20px; font-weight:600; color:var(--heading)}
+  .sub{margin:0 0 22px; font-size:13px; color:var(--desc)}
+  .idp{
+    display:flex; align-items:center; justify-content:center; gap:10px; width:100%;
+    padding:11px 14px; border-radius:var(--radius); border:1px solid var(--teal);
+    background:var(--teal); color:var(--navy); font-size:14px; font-weight:600; cursor:pointer;
+  }
+  .idp:hover{background:#6FD0D1; border-color:#6FD0D1}
+  .idp img{width:16px; height:16px}
+  .rule{display:flex; align-items:center; gap:12px; margin:22px 0; color:var(--desc); font-size:12px}
+  .rule::before,.rule::after{content:""; flex:1; height:1px; background:var(--divider)}
+  label{display:block; margin:0 0 6px; font-size:13px; color:var(--label)}
+  input{
+    width:100%; padding:10px 12px; margin-bottom:16px; border-radius:var(--radius);
+    background:var(--input-bg); border:1px solid var(--input-border); color:var(--heading); font-size:14px;
+  }
+  input::placeholder{color:var(--placeholder)}
+  input:focus{outline:2px solid var(--blue); outline-offset:1px; border-color:var(--blue)}
+  .primary{
+    width:100%; padding:11px 14px; border:0; border-radius:var(--radius);
+    background:var(--teal); color:var(--navy); font-size:14px; font-weight:600; cursor:pointer;
+  }
+  .primary:hover{background:#6FD0D1}
+  .links{margin-top:18px; text-align:center; font-size:13px}
+  a{color:var(--accent); text-decoration:none}
+  a:hover{color:var(--blue); text-decoration:underline}
+  footer{
+    border-top:1px solid var(--footer-border); padding:18px 16px;
+    display:flex; justify-content:center; background:var(--navy);
+  }
+  footer img{width:200px; height:50px; opacity:1}
+  .note{
+    max-width:760px; margin:0 auto 28px; padding:0 16px; font-size:12px; color:var(--desc);
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <img class="logo" src="assets/form-logo-dark.svg" alt="Stratevi">
+
+    <div class="card">
+      <h1>Sign in</h1>
+      <p class="sub">Continue to the Stratevi Shiny platform</p>
+
+      <button class="idp">
+        <img src="assets/idp-microsoft365-dark.svg" alt="">
+        Sign in with Microsoft365
+      </button>
+
+      <div class="rule">or</div>
+
+      <label for="u">Email</label>
+      <input id="u" type="email" placeholder="you@stratevi.com">
+      <label for="p">Password</label>
+      <input id="p" type="password" placeholder="Password">
+      <button class="primary">Sign in</button>
+
+      <div class="links"><a href="#">Forgot your password?</a></div>
+    </div>
+  </div>
+
+  <p class="note">
+    Approximation only. Cognito owns every word on this page - "Sign in",
+    "Sign in with Microsoft365", "Forgot your password?" - and none of it can be
+    changed by branding. The tagline under the wordmark is baked into
+    <code>assets/form-logo-dark.svg</code> because it is the only way to put a
+    line of our own copy on the page.
+  </p>
+
+  <footer><img src="assets/footer-logo-dark.svg" alt="Assembled Intelligence | Stratevi"></footer>
+</body>
+</html>
