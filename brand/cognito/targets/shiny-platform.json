@@ -1,0 +1,10 @@
+{
+  "description": "The Shiny platform's shared client -- the portal and every proxied app.",
+  "userPoolId": "us-east-1_LI3CZpwAF",
+  "clientId": "1senki56hh2ngv7neuqhot6gv8",
+  "region": "us-east-1",
+  "idpResourceName": "Microsoft365",
+  "hostedUiDomain": "stratevi-shinyplatform.auth.us-east-1.amazoncognito.com",
+  "redirectUri": "https://shinyplatform.tools.stratevi.com/oauth2/idpresponse",
+  "entryPoint": "https://shinyplatform.tools.stratevi.com"
+}

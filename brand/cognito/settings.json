@@ -434,7 +434,7 @@
   },
   "categories": {
     "global": {
-      "colorSchemeMode": "DARK",
+      "colorSchemeMode": "DYNAMIC",
       "spacingDensity": "REGULAR",
       "pageHeader": {
         "enabled": false

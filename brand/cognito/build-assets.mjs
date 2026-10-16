@@ -51,8 +51,13 @@ const C = {
 };
 
 // The one line of copy the branding system lets us place. Cognito cannot set
-// page text, so this lives inside the form-logo image; edit it here and
-// re-run.
+// page text, so it has to live inside the form-logo image.
+//
+// NOTE: this tagline is NOT on the live page. The pools run the corporate
+// lockup (STRATEGY + EVIDENCE) instead, and form-logo-*.svg is generated but
+// left out of the manifest -- see the manifest block at the bottom and the
+// reconciliation note in README.md. Edit it here and re-run only if you are
+// also putting the SVGs back in the manifest.
 const TAGLINE = 'Dashboards and models, on demand';
 
 // --- source bodies ---------------------------------------------------------
@@ -257,12 +262,24 @@ await buildIco();
 
 // ---------------------------------------------------------------------------
 // The manifest apply.ps1 walks. Category / ColorMode / Extension are the
-// cognito-idp AssetType enums; ResourceId is only meaningful for
-// IDP_BUTTON_ICON, where it names the identity provider.
+// cognito-idp AssetType enums. ResourceId is only meaningful for
+// IDP_BUTTON_ICON; since apply.ps1 became target-driven its VALUE comes from
+// targets/<name>.json (the provider is named Microsoft365 on the platform and
+// Microsoft in stratevi-dossier), so the literal below is just a flag meaning
+// "this asset is an IdP icon".
+//
+// The existsSync filter is load-bearing: an asset listed here but missing on
+// disk is dropped rather than failing the apply.
 // ---------------------------------------------------------------------------
 const manifest = [
-  { file: 'form-logo-dark.svg', category: 'FORM_LOGO', colorMode: 'DARK', extension: 'SVG', element: 'Brand lockup + tagline above the sign-in card' },
-  { file: 'form-logo-light.svg', category: 'FORM_LOGO', colorMode: 'LIGHT', extension: 'SVG', element: 'Same, for light mode' },
+  // FORM_LOGO is the corporate lockup, which this script does NOT generate:
+  // form-logo-corporate-*.png was recovered from the live style and is only
+  // ever copied, never rebuilt. form-logo-dark.svg / -light.svg are still
+  // written on every run but deliberately kept OUT of the manifest, so a
+  // regeneration cannot push them over the lockup on every pool. Swap the two
+  // pairs to go back to the platform composition.
+  { file: 'form-logo-corporate-dark.png', category: 'FORM_LOGO', colorMode: 'DARK', extension: 'PNG', element: 'Corporate lockup above the sign-in card: mark, stratevi wordmark, STRATEGY + EVIDENCE' },
+  { file: 'form-logo-corporate-light.png', category: 'FORM_LOGO', colorMode: 'LIGHT', extension: 'PNG', element: 'Same, for light mode' },
   { file: 'footer-logo-dark.svg', category: 'PAGE_FOOTER_LOGO', colorMode: 'DARK', extension: 'SVG', element: 'Muted corporate lockup in the page footer' },
   { file: 'footer-logo-light.svg', category: 'PAGE_FOOTER_LOGO', colorMode: 'LIGHT', extension: 'SVG', element: 'Same, for light mode' },
   { file: 'favicon-dark.svg', category: 'FAVICON_SVG', colorMode: 'DARK', extension: 'SVG', element: 'Browser tab icon (modern browsers)' },

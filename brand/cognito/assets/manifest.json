@@ -1,16 +1,16 @@
 [
   {
-    "file": "form-logo-dark.svg",
+    "file": "form-logo-corporate-dark.png",
     "category": "FORM_LOGO",
     "colorMode": "DARK",
-    "extension": "SVG",
-    "element": "Brand lockup + tagline above the sign-in card"
+    "extension": "PNG",
+    "element": "Corporate lockup above the sign-in card: mark, stratevi wordmark, STRATEGY + EVIDENCE"
   },
   {
-    "file": "form-logo-light.svg",
+    "file": "form-logo-corporate-light.png",
     "category": "FORM_LOGO",
     "colorMode": "LIGHT",
-    "extension": "SVG",
+    "extension": "PNG",
     "element": "Same, for light mode"
   },
   {

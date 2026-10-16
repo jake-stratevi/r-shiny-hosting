@@ -1,0 +1,10 @@
+{
+  "description": "AMCP dossier writer (Railway), pool stratevi-dossier. Its Entra provider is named 'Microsoft', not 'Microsoft365'.",
+  "userPoolId": "us-east-1_vsrCYXPkB",
+  "clientId": "6l98buca3rm075l3bo85irch80",
+  "region": "us-east-1",
+  "idpResourceName": "Microsoft",
+  "hostedUiDomain": "us-east-1vsrcyxpkb.auth.us-east-1.amazoncognito.com",
+  "redirectUri": "https://app-production-a09b.up.railway.app/auth/callback",
+  "entryPoint": "https://app-production-a09b.up.railway.app"
+}

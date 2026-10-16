@@ -49,12 +49,22 @@ old-Hub-pool clients (the ADR-0013 Lambda portal and `model/`) are destroyed,
 and their leftover clients went with them. Nothing in this repo points at the
 Hub pool any more.
 
-**The login page is branded** (`brand/cognito/`, applied 2026-09-11):
-Stratevi logo, palette and copy via Managed Login v2 — a `settings.json` plus
-ten base64 assets, applied with `brand/cognito/apply.ps1`. Terraform cannot
-express this, so the branding is an out-of-band artefact that is
-version-controlled and re-appliable rather than console-only. **Session
-timeout is 3 hours** (`10800`, `proxy/alb.tf`), down from 12.
+**The login page is branded** (`brand/cognito/`, applied 2026-09-11,
+reconciled and re-applied 2026-10-15): Stratevi logo, palette and copy via
+Managed Login v2 — a `settings.json` plus ten base64 assets, applied with
+`brand/cognito/apply.ps1`. Terraform cannot express this, so the branding is
+an out-of-band artefact that is version-controlled and re-appliable rather
+than console-only. **Session timeout is 3 hours** (`10800`, `proxy/alb.tf`),
+down from 12.
+
+**One style, two pools.** A managed-login style belongs to exactly one (user
+pool, app client) pair, so the same document is installed per destination
+from `brand/cognito/targets/`: `shiny-platform` and `amcp-dossier` (the AMCP
+dossier writer on Railway, pool `us-east-1_vsrCYXPkB`). `apply.ps1 -Target
+<name>` substitutes the pool's identity-provider name, which differs between
+them. A 2026-10-15 diff against the live platform style found it had drifted
+— stock-blue buttons from a console edit — and the reconciliation is written
+up in `brand/cognito/README.md`.
 
 **Dashboard stack. Deployed, in use — and MIGRATED TO THE PROXY (2026-09-09,
 `proxied = true`).** The full lifecycle was verified live on a rehearsal host
