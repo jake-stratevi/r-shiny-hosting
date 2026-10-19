@@ -13,24 +13,52 @@
   document and an upsert of each (Category, ColorMode, ResourceId) asset, so
   running it twice is a no-op.
 
+.PARAMETER Target
+  Which deployment to style, naming a file in targets/ (without the .json):
+  shiny-platform, amcp-dossier. Mandatory and deliberately undefaulted -- a
+  defaulted destination is how you restyle the wrong pool by accident.
+
 .PARAMETER DryRun
   Build and validate the request, write it to a temp file, print the command,
   and stop without calling AWS.
 
 .EXAMPLE
-  ./apply.ps1 -DryRun
-  ./apply.ps1
+  ./apply.ps1 -Target shiny-platform -DryRun
+  ./apply.ps1 -Target amcp-dossier
 #>
 [CmdletBinding()]
 param(
-    [string] $UserPoolId = 'us-east-1_LI3CZpwAF',
-    [string] $ClientId   = '1senki56hh2ngv7neuqhot6gv8',
-    [string] $Region     = 'us-east-1',
+    [Parameter(Mandatory)]
+    [string] $Target,
     [switch] $DryRun
 )
 
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# --- 0. resolve the target ---------------------------------------------------
+# Cognito has no account-level or cross-pool style: a managed-login style
+# belongs to exactly one (user pool, app client) pair. So the repo holds one
+# style document and targets/ holds every place it is installed.
+$targetPath = Join-Path $here (Join-Path 'targets' "$Target.json")
+if (-not (Test-Path $targetPath)) {
+    $known = (Get-ChildItem (Join-Path $here 'targets') -Filter *.json |
+              ForEach-Object BaseName) -join ', '
+    throw "no target '$Target' -- known targets: $known"
+}
+$t = Get-Content -LiteralPath $targetPath -Raw | ConvertFrom-Json
+
+$UserPoolId      = $t.userPoolId
+$ClientId        = $t.clientId
+$Region          = $t.region
+$IdpResourceName = $t.idpResourceName
+
+Write-Host ""
+Write-Host "TARGET  $Target" -ForegroundColor Cyan
+Write-Host "  pool    $UserPoolId"
+Write-Host "  client  $ClientId"
+Write-Host "  idp     $IdpResourceName"
+Write-Host ""
 
 $settingsPath = Join-Path $here 'settings.json'
 $manifestPath = Join-Path $here 'assets\manifest.json'
@@ -69,6 +97,25 @@ Write-Host "  style $brandingId"
 $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 
+# The identity provider's name in the pool is the key Cognito matches the
+# custom IdP-button treatment on, and it differs per pool (Microsoft365 on the
+# platform, Microsoft in stratevi-dossier). settings.json carries the platform
+# literal; rename the key for any other target. Get a pool's real name from
+# `aws cognito-idp list-identity-providers --user-pool-id <pool>`.
+#
+# The guard matters more than the rename: point this at a name the pool does
+# not have and Cognito does NOT error -- the button silently falls back to the
+# grey `standard` treatment and you ship a correct-looking page with the wrong
+# button.
+$custom = $settings.components.idpButton.custom
+if ($custom.PSObject.Properties.Name -notcontains 'Microsoft365') {
+    throw "settings.json no longer has components.idpButton.custom.Microsoft365 -- update this block"
+}
+if ($IdpResourceName -ne 'Microsoft365') {
+    $custom | Add-Member -NotePropertyName $IdpResourceName -NotePropertyValue $custom.Microsoft365
+    $custom.PSObject.Properties.Remove('Microsoft365')
+}
+
 $assets = @()
 foreach ($a in $manifest) {
     $file = Join-Path $here (Join-Path 'assets' $a.file)
@@ -83,9 +130,12 @@ foreach ($a in $manifest) {
         Bytes     = [System.Convert]::ToBase64String($bytes)
     }
     # ResourceId names the identity provider, and is meaningful only for
-    # IDP_BUTTON_ICON. Omit it everywhere else.
+    # IDP_BUTTON_ICON. Omit it everywhere else. The manifest's resourceId is
+    # now just a flag -- "this asset is an IdP icon" -- and the value comes
+    # from the target, same as the settings key above. The filenames still say
+    # microsoft365; it is the Microsoft logo either way.
     if ($a.PSObject.Properties.Name -contains 'resourceId' -and $a.resourceId) {
-        $entry.ResourceId = $a.resourceId
+        $entry.ResourceId = $IdpResourceName
     }
     $assets += [pscustomobject]$entry
     Write-Host ("  asset {0,-18} {1,-5} {2}" -f $a.category, $a.colorMode, $a.file)
@@ -127,9 +177,10 @@ aws cognito-idp update-managed-login-branding --region $Region --cli-input-json 
 if ($LASTEXITCODE -ne 0) { throw "update-managed-login-branding failed with exit code $LASTEXITCODE" }
 Remove-Item -LiteralPath $tmp -Force
 
-Write-Host "Applied. Preview the result at:"
-Write-Host "  https://stratevi-shinyplatform.auth.$Region.amazoncognito.com/login?client_id=$ClientId&response_type=code&scope=openid+email+profile&redirect_uri=https%3A%2F%2Fshinyplatform.tools.stratevi.com%2Foauth2%2Fidpresponse"
+$redirect = [uri]::EscapeDataString($t.redirectUri)
+Write-Host "Applied to $Target. Preview the result at:"
+Write-Host "  https://$($t.hostedUiDomain)/login?client_id=$ClientId&response_type=code&scope=openid+email+profile&redirect_uri=$redirect"
 Write-Host ""
-Write-Host "NOTE: that URL renders the page but CANNOT complete a sign-in -- the ALB"
-Write-Host "      rejects a callback it did not start (AuthMissingStateParam). To"
-Write-Host "      actually sign in, start from https://shinyplatform.tools.stratevi.com."
+Write-Host "NOTE: that URL renders the page but CANNOT complete a sign-in -- the"
+Write-Host "      relying party rejects a callback it did not start. To actually"
+Write-Host "      sign in, start from $($t.entryPoint)."
